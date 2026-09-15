@@ -1,7 +1,8 @@
 # Isolating citron for per-title OpenPak research
 
 > Trimmed copy for this repository; the canonical document lives at
-> `Openpak/servers/shared-docs/citron-isolation.md` and governs. Last synchronised 2026-09-15.
+> `Openpak/docs/playbooks/citron-isolation.md` and governs. Last synchronised 2026-09-15.
+
 
 Applies to any OpenPak game project (`servers/<name>`) using the OpenPak
 citron fork (`emulators/citron`) as its test client. Two independent things
@@ -37,13 +38,13 @@ must never enter a repo tree, even gitignored. The accounts are the two
 generic host/joiner identities for all titles; the Ryujinx side mirrors the
 same two personas (see `ryujinx-isolation.md`).
 
-Launch through the shared scripts in `servers/shared-docs/scripts/`, which
+Launch through the shared scripts in `tools/`, which
 cd into the right persona, enforce the Citron Launch Protocol, and refuse
 the real production account:
 
 ```sh
-servers/shared-docs/scripts/launch-citron-host.sh    [game.nsp]   # or empty for citron's GUI list
-servers/shared-docs/scripts/launch-citron-joiner.sh  [game.nsp]
+tools/launch-citron-host.sh    [game.nsp]   # or empty for citron's GUI list
+tools/launch-citron-joiner.sh  [game.nsp]
 ```
 
 A game adds its title-specific redirect env (below) before calling these —
@@ -135,7 +136,7 @@ the fork source (`OPENPAK_<TITLE>_IP`, `OPENPAK_S3_DEBUG_PROXY_*`,
 
 Never launch citron by hand — a bare relaunch after a crash silently drops
 the isolation env and reaches the real server (this has happened more than
-once). Use the shared scripts in `servers/shared-docs/scripts/`:
+once). Use the shared scripts in `tools/`:
 
 - `launch-citron.sh <host|joiner> [game args]` — the engine: cd into the
   persona's portable profile, enforce the Citron Launch Protocol (refuse a

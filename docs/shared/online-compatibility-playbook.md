@@ -1,7 +1,8 @@
 # Online Compatibility Playbook
 
 > Trimmed copy for this repository; the canonical document lives at
-> `Openpak/servers/shared-docs/online-compatibility-playbook.md` and governs. Last synchronised 2026-09-15.
+> `Openpak/docs/playbooks/online-compatibility-playbook.md` and governs. Last synchronised 2026-09-15.
+
 
 A general method for taking a Switch title running under an OpenPak test
 emulator — **the citron fork (`emulators/citron`) or the ryujinx fork

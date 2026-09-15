@@ -1,7 +1,8 @@
 # Isolating Ryujinx — two shared host/joiner profiles
 
 > Trimmed copy for this repository; the canonical document lives at
-> `Openpak/servers/shared-docs/ryujinx-isolation.md` and governs. Last synchronised 2026-09-15.
+> `Openpak/docs/playbooks/ryujinx-isolation.md` and governs. Last synchronised 2026-09-15.
+
 
 The Ryujinx counterpart of `citron-isolation.md`, for the OpenPak ryujinx
 fork (`emulators/ryujinx`). Two independent things to isolate: **data** (so
@@ -15,14 +16,14 @@ across all games:
 
 | Role | Data dir | Signs into account | Launcher |
 |---|---|---|---|
-| **host** | `~/ryujinx-instances/host` | `OutboundHost` (pid 1800000003) | `shared-docs/scripts/launch-ryujinx-host.sh` |
-| **joiner** | `~/ryujinx-instances/joiner` | `OutboundJoiner` (pid 1800000004) | `shared-docs/scripts/launch-ryujinx-joiner.sh` |
+| **host** | `~/ryujinx-instances/host` | `OutboundHost` (pid 1800000003) | `tools/launch-ryujinx-host.sh` |
+| **joiner** | `~/ryujinx-instances/joiner` | `OutboundJoiner` (pid 1800000004) | `tools/launch-ryujinx-joiner.sh` |
 
 The two accounts are the family-wide shared host/joiner identities (see
 `conventions.md`; names are historical). BOTH emulators sign into the SAME two
 accounts, so a citron host and a Ryujinx host are the same player.
 
-(Same `shared-docs/scripts/` layout as the citron launchers — a
+(Same `tools/` layout as the citron launchers — a
 `launch-ryujinx.sh <host\|joiner>` engine plus the two thin persona wrappers.)
 
 Different games' saves coexist happily in one profile (saves are keyed by
@@ -132,7 +133,7 @@ saveDataIds), keep a backup.
 
 ## 3. The shared launchers
 
-Family-wide launchers in `servers/shared-docs/scripts/` wrap everything
+Family-wide launchers in `tools/` wrap everything
 above (X11 forcing, stack preflight, Launch-Protocol guard, first-run seed,
 BAAS key, route ensure): an engine `launch-ryujinx.sh <host|joiner>` plus
 the two persona wrappers `launch-ryujinx-host.sh` /
@@ -142,14 +143,14 @@ NSP:
 ```sh
 # host a game:
 OPENPAK_ROUTE="t-9f607adf-lp1.lp1.t.npln.srv.nintendo.net=127.0.0.1:18501" \
-  shared-docs/scripts/launch-ryujinx-host.sh "/path/to/Stardew Valley [0100e65002bb8000].nsp"
+  tools/launch-ryujinx-host.sh "/path/to/Stardew Valley [0100e65002bb8000].nsp"
 
 # join from the other profile:
 OPENPAK_ROUTE="t-9f607adf-lp1.lp1.t.npln.srv.nintendo.net=127.0.0.1:18501" \
-  shared-docs/scripts/launch-ryujinx-joiner.sh "/path/to/Stardew Valley [0100e65002bb8000].nsp"
+  tools/launch-ryujinx-joiner.sh "/path/to/Stardew Valley [0100e65002bb8000].nsp"
 
 # main window only, to sign in the first time (then load a game from the UI):
-shared-docs/scripts/launch-ryujinx-host.sh --menu
+tools/launch-ryujinx-host.sh --menu
 ```
 
 - `OPENPAK_ROUTE` — the game's NPLN tenant → its local server; ensured in the

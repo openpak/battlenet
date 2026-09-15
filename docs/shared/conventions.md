@@ -1,7 +1,8 @@
 # Family conventions
 
 > Trimmed copy for this repository; the canonical document lives at
-> `Openpak/servers/shared-docs/conventions.md` and governs. Last synchronised 2026-09-15.
+> `Openpak/docs/playbooks/conventions.md` and governs. Last synchronised 2026-09-15.
+
 
 Rules and shapes shared by every OpenPak project — the `servers/<name>` game
 servers and the `emulators/<name>` forks. When a repo deviates, it needs a
@@ -53,7 +54,7 @@ Every repo's living handoff is its root **`next-session.md`** (lowercase —
 
 Alongside it, every repo keeps a root **`CHANGELOG.md`** (dated one-line
 history), a **`docs/`** for project-specific documents — protocol notes,
-hostname/endpoint inventories, trimmed shared-docs copies — and a **`prds/`**
+hostname/endpoint inventories, trimmed docs/shared copies — and a **`prds/`**
 for design documents.
 
 ## Experiments
@@ -71,9 +72,9 @@ for design documents.
   two profiles, reused for all titles:
   - citron: `~/.local/share/citron/{host,joiner}` (portable mode;
     the persona dir keeps its historical pre-port name), launched via
-    `servers/shared-docs/scripts/launch-citron-{host,joiner}.sh`.
+    `tools/launch-citron-{host,joiner}.sh`.
   - Ryujinx: the two `~/ryujinx-instances/{host,joiner}` portable dirs,
-    launched via `servers/shared-docs/scripts/launch-ryujinx-{host,joiner}.sh`
+    launched via `tools/launch-ryujinx-{host,joiner}.sh`
     (see `ryujinx-isolation.md`).
 - **Two shared accounts** back the personas for every game — host =
   `OutboundHost` (pid 1800000003), joiner = `OutboundJoiner` (pid 1800000004).
@@ -102,11 +103,11 @@ for design documents.
 
 - Game servers live at `servers/<name>` (Go or C#), single responsibility per
   repo, README states the backend and what is/isn't implemented. Shared docs
-  live here at `servers/shared-docs/`; emulator forks at `emulators/citron`
+  live at `docs/playbooks/` in the workspace root; emulator forks at `emulators/citron`
   and `emulators/ryujinx`.
 - Each server repo keeps: `README.md` (what works/what doesn't),
   `next-session.md`, `CHANGELOG.md`, `docs/` (project-specific docs + trimmed
-  shared-docs copies), `prds/`, `.env.example`, `LICENSE`.
+  docs/shared/ copies), `prds/`, `.env.example`, `LICENSE`.
 - Analysis tooling: `~/REPOS/nx2elf`, `~/.local/opt/ghidra_*`. Keep those
   paths stable — docs and scripts depend on them.
 - Historical note: the frozen pre-port earlier repos live under
@@ -114,12 +115,12 @@ for design documents.
 
 ## Shared-docs hygiene
 
-- The **canonical** versions of these docs stay in `servers/shared-docs/`.
+- The **canonical** versions of these docs live at `Openpak/docs/playbooks/`.
   A doc belongs here when it is true for ≥2 projects; title-specific facts
   stay in the title's repo.
 - Repos do not symlink or mirror the bundle: each repo receives **trimmed,
   per-project copies** of only the docs it needs, kept in its own `docs/`
-  and each starting with a `trimmed copy, canonical at servers/shared-docs/`
+  and each starting with a `trimmed copy, canonical at docs/playbooks/`
   header pointing back here.
 - When an operation costs real hours and yields a rule, add the rule to the
   canonical doc here (then refresh the affected trimmed copies) instead of

@@ -1,8 +1,5 @@
 ## Emulator Launch Protocol (family-wide)
 
-> Trimmed copy for this repository; the canonical document lives at
-> `Openpak/servers/shared-docs/emulator-launch-protocol.md` and governs. Last synchronised 2026-09-15.
-
 Applies to every test emulator the family runs — currently the OpenPak
 forks `emulators/citron` (builds to `build/*/bin/citron`) and
 `emulators/ryujinx`, and any future emulator fork.
