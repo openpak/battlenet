@@ -350,11 +350,30 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 				}
 				s.send(s.buildServerRPC(13, 3, 0, payload))
 			}
-			// Method 5's captured payload {1: 522} came from the rejection
-			// session — 522 is the same value the title reports as "Cannot
-			// Connect". If the client reads it as a status, the replayed
-			// burst is refusing logon on our behalf. BATTLENET_METHOD5_HEX
-			// overrides the payload; the value "skip" drops the frame.
+			// BATTLENET_LOGON_RESULT: hex payload pushed as OnLogonComplete.
+			// BATTLENET_LOGON_METHODS lists candidate method numbers (the
+			// D2R dialect's auth-listener numbering is only pinned at 12=
+			// OnLogonQueueUpdate and 13=OnLogonQueueEnd); unknown methods are
+			// dropped silently by the client, so fanning out is safe.
+			if lr := env("BATTLENET_LOGON_RESULT", ""); lr != "" {
+				for _, m := range strings.Split(env("BATTLENET_LOGON_METHODS", "4"), ",") {
+					if n, err := strconv.ParseUint(strings.TrimSpace(m), 0, 64); err == nil {
+						s.send(s.buildServerRPC(n, 5, 0, mustHex(lr)))
+					}
+				}
+				log.Printf("GATEWAY %s: LogonResult pushed", s.remote)
+			}
+			// BATTLENET_QUEUE_END: a second OnLogonQueueUpdate with position
+			// 0 one second later — the way the queue UI actually clears
+			// (position 0), observed in E7.
+			if env("BATTLENET_QUEUE_END", "") != "" {
+				s.arm(time.Second, func() {
+					p := append(pbVarint(1, 0), pbVarint(2, uint64(now().UnixMicro()))...)
+					p = append(p, pbVarint(3, 0)...)
+					s.send(s.buildServerRPC(12, 6, 0, p))
+					log.Printf("GATEWAY %s: queue-end (position 0) pushed", s.remote)
+				})
+			}
 			method5Payload := env("BATTLENET_METHOD5_HEX", "088a04")
 			if !strings.EqualFold(method5Payload, "skip") {
 				s.send(s.buildServerRPC(5, 4, 3, mustHex(method5Payload)))
