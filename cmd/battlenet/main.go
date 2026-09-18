@@ -108,7 +108,9 @@ func dump(w http.ResponseWriter, r *http.Request, what string) []byte {
 	for k, v := range r.Header {
 		log.Printf("  %s: %s", k, strings.Join(v, ", "))
 	}
-	if len(body) > 0 {
+	if len(body) > 0 && what == "CHECK_TOKEN" {
+		log.Printf("  body: [redacted authentication payload, %d bytes]", len(body))
+	} else if len(body) > 0 {
 		log.Printf("  body (%d bytes): %s", len(body), body)
 	}
 	return body
@@ -156,6 +158,7 @@ func main() {
 		dump(w, r, "GEO")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
+  "datacenter_region": "US",
   "country_alpha2": "US",
   "loc": "US",
   "svc": {
@@ -250,10 +253,7 @@ func main() {
 		// OpenPak does not have an implementation for yet, endpoint by endpoint,
 		// and shrinks as they are answered.
 		relay(w, r, dump(w, r, "ACCOUNT"))
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
 	}
 
 	// One listener, host-routed: Traefik terminates TLS for the three names and
@@ -424,7 +424,11 @@ func serveGateway(c net.Conn) {
 		n, err := c.Read(buf)
 		if n > 0 {
 			if sinkTrace {
-				log.Printf("SINKRX %s: %x", remote, buf[:n])
+				if bytes.Contains(buf[:n], []byte("eyJ")) {
+					log.Printf("SINKRX %s: [redacted authentication frame, %d bytes]", remote, n)
+				} else {
+					log.Printf("SINKRX %s: %x", remote, buf[:n])
+				}
 			}
 			pending = append(pending, buf[:n]...)
 			for len(pending) >= 2 {
@@ -443,7 +447,11 @@ func serveGateway(c net.Conn) {
 					log.Printf("GATEWAY %s: ping answered", remote)
 					continue
 				case 2: // binary
-					log.Printf("GATEWAY rpc in (%d bytes): %x", len(frame.payload), frame.payload)
+					if bytes.Contains(frame.payload, []byte("eyJ")) {
+						log.Printf("GATEWAY rpc in (%d bytes): [authentication payload redacted]", len(frame.payload))
+					} else {
+						log.Printf("GATEWAY rpc in (%d bytes): %x", len(frame.payload), frame.payload)
+					}
 					h := parseRPCHeader(frame.payload)
 					log.Printf("GATEWAY rpc header: service=%d method=%d request=%d",
 						h.serviceID, h.methodID, h.requestID)

@@ -36,9 +36,9 @@ func TestFrameFidelity(t *testing.T) {
 	}
 	hexFull := hex.EncodeToString(got)
 	for _, want := range []string{
-		"425e" + regionDescHex,      // field 8: region descriptor, verbatim
+		"425e" + regionDescHex,                     // field 8: region descriptor, verbatim
 		"4a21" + hex.EncodeToString([]byte(s.sid)), // field 9: session id
-		"5001",                      // field 10: 1
+		"5001", // field 10: 1
 	} {
 		if !bytes.Contains(got, mustHex(want)) {
 			t.Fatalf("ConnectResponse missing %s:\n%x", want, got)
@@ -70,5 +70,43 @@ func TestFrameFidelity(t *testing.T) {
 	want5, _ := hex.DecodeString("003008001005180428035d350e24716a21444334454141364636413843443134392d30303030303030303030304333373833088a04")
 	if !bytes.Equal(got5, want5) {
 		t.Fatalf("method5 mismatch:\n got %x\nwant %x", got5, want5)
+	}
+}
+
+func TestSuccessfulLogonResult(t *testing.T) {
+	got, err := buildSuccessfulLogonResult("4152366661")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	account := pbBytes(2, entityID(battlenetAccountHigh, 4152366661))
+	gameAccount := pbBytes(3, entityID(d2rGameAccountHigh, 4152366661))
+	for name, want := range map[string][]byte{
+		"success error code": {0x08, 0x00},
+		"account entity id":  account,
+		"game entity id":     gameAccount,
+		"available region":   {0x28, 0x01},
+		"connected region":   {0x30, 0x01},
+		"country":            pbBytes(8, []byte("US")),
+	} {
+		if !bytes.Contains(got, want) {
+			t.Errorf("LogonResult missing %s (%x): %x", name, want, got)
+		}
+	}
+
+	// Field 9 is a length-delimited 64-byte session key.
+	if !bytes.Contains(got, []byte{0x4a, 0x40}) {
+		t.Fatalf("LogonResult missing 64-byte session key: %x", got)
+	}
+	if len(got) != 130 {
+		t.Fatalf("LogonResult length %d, want 130: %x", len(got), got)
+	}
+}
+
+func TestRPCResponse(t *testing.T) {
+	got := buildRPCResponse(3, []byte{0x0a, 0x01, 'x'})
+	want := mustHex("000708fe01180330000a0178")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("RPC response mismatch:\n got %x\nwant %x", got, want)
 	}
 }

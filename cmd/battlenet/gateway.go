@@ -57,6 +57,11 @@ const (
 	// The gateway instance id baked into observed session ids (the low u32
 	// of field 1: 6a8cd146/47/49 across two days). One gateway, one value.
 	gatewayInstance = uint32(0x6a8cd149)
+	// EntityId is two required fixed64 fields. The high word encodes kind,
+	// region and program: account kind=1 is global; game-account kind=2 is
+	// in region 1 (US) for program OSI (0x4f5349).
+	battlenetAccountHigh = uint64(0x0100000000000000)
+	d2rGameAccountHigh   = uint64(0x02000001004f5349)
 )
 
 // The observed schedule. The real gateway's KeepAlive config landed
@@ -84,9 +89,9 @@ func mustHex(s string) []byte {
 
 // Session stages.
 const (
-	stageAnonymous = iota // connected; anonymous Connect answered
-	stageArmed            // KeepAlive config sent; waiting for the authenticated Connect
-	stageAuthenticated    // authenticated Connect answered; capturing past logon
+	stageAnonymous     = iota // connected; anonymous Connect answered
+	stageArmed                // KeepAlive config sent; waiting for the authenticated Connect
+	stageAuthenticated        // authenticated Connect answered; capturing past logon
 )
 
 // sessionIDCounter seeds the C component near the last value observed on the
@@ -170,6 +175,47 @@ func pbFixed32(field uint64, b []byte) []byte {
 	return append([]byte{byte(field<<3 | 5)}, b...)
 }
 
+// pbFixed64Value encodes a protobuf fixed64 field. EntityId uses fixed64,
+// not varint; using pbVarint here produces a different wire type and the
+// client cannot parse the otherwise plausible LogonResult.
+func pbFixed64Value(field, value uint64) []byte {
+	out := make([]byte, 9)
+	out[0] = byte(field<<3 | 1)
+	binary.LittleEndian.PutUint64(out[1:], value)
+	return out
+}
+
+func entityID(high, low uint64) []byte {
+	out := pbFixed64Value(1, high)
+	return append(out, pbFixed64Value(2, low)...)
+}
+
+// buildSuccessfulLogonResult constructs the public
+// bgs.protocol.authentication.v1.LogonResult shape used by successful BGS
+// servers. The session key is fresh per authentication and deliberately has
+// the observed 64-byte length.
+func buildSuccessfulLogonResult(subject string) ([]byte, error) {
+	accountID, err := strconv.ParseUint(subject, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("battlenet subject %q is not numeric: %w", subject, err)
+	}
+
+	sessionKey := make([]byte, 64)
+	if _, err := crand.Read(sessionKey); err != nil {
+		return nil, fmt.Errorf("session key entropy: %w", err)
+	}
+
+	result := pbVarint(1, 0) // error_code: ERROR_OK
+	result = append(result, pbBytes(2, entityID(battlenetAccountHigh, accountID))...)
+	result = append(result, pbBytes(3, entityID(d2rGameAccountHigh, accountID))...)
+	result = append(result, pbVarint(5, 1)...) // available_region: US
+	result = append(result, pbVarint(6, 1)...) // connected_region: US
+	result = append(result, pbBytes(7, []byte("OpenPak#0001"))...)
+	result = append(result, pbBytes(8, []byte("US"))...)
+	result = append(result, pbBytes(9, sessionKey)...)
+	return result, nil
+}
+
 // serverRequestID builds the shared header tail of server-initiated frames:
 // the protocol-constant field 11 and, where observed, the session id at
 // field 13.
@@ -184,8 +230,9 @@ func serverRequestID(s *gatewaySession, withSID bool) []byte {
 // buildConnectResponse answers the anonymous ConnectionService.Connect
 // (request 0) with the fresh session identity. Captured shape:
 // {1: {A: random u32, B: gateway instance},
-//  2: {C: connection counter, D: unix seconds},
-//  6: server clock µs, 8: region descriptor, 9: session id, 10: 1}.
+//
+//	2: {C: connection counter, D: unix seconds},
+//	6: server clock µs, 8: region descriptor, 9: session id, 10: 1}.
 func (s *gatewaySession) buildConnectResponse() []byte {
 	// Response header: service 0xFE, echoed request id, timeout 168, status OK.
 	header := pbVarint(1, 0xFE)
@@ -220,6 +267,19 @@ func (s *gatewaySession) buildServerRPC(method, requestID, timeout uint64, msg [
 	header = append(header, pbVarint(3, requestID)...)
 	header = append(header, pbVarint(5, timeout)...)
 	header = append(header, serverRequestID(s, true)...)
+	out := make([]byte, 2, 2+len(header)+len(msg))
+	binary.BigEndian.PutUint16(out, uint16(len(header)))
+	out = append(out, header...)
+	return append(out, msg...)
+}
+
+// buildRPCResponse returns a successful response to a client request. The
+// response service is 0xFE, the request id is echoed, and the response body
+// follows the header directly.
+func buildRPCResponse(requestID uint64, msg []byte) []byte {
+	header := pbVarint(1, 0xFE)
+	header = append(header, pbVarint(3, requestID)...)
+	header = append(header, pbVarint(6, 0)...)
 	out := make([]byte, 2, 2+len(header)+len(msg))
 	binary.BigEndian.PutUint16(out, uint16(len(header)))
 	out = append(out, header...)
@@ -375,7 +435,15 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 				})
 			}
 			method5Payload := env("BATTLENET_METHOD5_HEX", "088a04")
-			if !strings.EqualFold(method5Payload, "skip") {
+			if env("BATTLENET_LOGON_SUCCESS", "") != "" {
+				result, err := buildSuccessfulLogonResult(subject)
+				if err != nil {
+					log.Printf("GATEWAY %s: successful LogonResult: %v", s.remote, err)
+					return false
+				}
+				s.send(s.buildServerRPC(5, 4, 0, result))
+				log.Printf("GATEWAY %s: successful LogonResult pushed on method 5", s.remote)
+			} else if !strings.EqualFold(method5Payload, "skip") {
 				s.send(s.buildServerRPC(5, 4, 3, mustHex(method5Payload)))
 			}
 			s.stage = stageAuthenticated
@@ -420,13 +488,30 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 		// 0xFE status-OK response frame carrying the request id, the same
 		// shape the title itself uses to answer server requests.
 		if env("BATTLENET_METHOD7_ECHO", "") != "" && h.methodID == 7 {
-			hdr := append(pbVarint(1, 0xFE), pbVarint(3, uint64(h.requestID))...)
-			hdr = append(hdr, pbVarint(6, 0)...)
-			frame := make([]byte, 2, 2+len(hdr))
-			binary.BigEndian.PutUint16(frame, uint16(len(hdr)))
-			frame = append(frame, hdr...)
-			s.send(frame)
+			s.send(buildRPCResponse(h.requestID, nil))
 			log.Printf("GATEWAY %s: method-7 answered (0xFE/req%d status-OK)", s.remote, h.requestID)
+		}
+		// After a successful BGS OnLogonComplete, D2R asks for web
+		// credentials (method 8) and then logs on to D2R services (method 1)
+		// over this same bindless connection. The method-1 payload echoes the
+		// account/game ids and 64-byte session key from our LogonResult.
+		if env("BATTLENET_LOGON_SUCCESS", "") != "" && h.methodID == 8 {
+			credential := make([]byte, 32)
+			if _, err := crand.Read(credential); err != nil {
+				log.Printf("GATEWAY %s: web credential entropy: %v", s.remote, err)
+				return false
+			}
+			s.send(buildRPCResponse(h.requestID, pbBytes(1, credential)))
+			log.Printf("GATEWAY %s: GenerateWebCredentials answered (req%d)", s.remote, h.requestID)
+		}
+		if env("BATTLENET_LOGON_SUCCESS", "") != "" && h.methodID == 1 {
+			responseHex := env("BATTLENET_D2R_AUTH_RESPONSE", "")
+			if responseHex == "" {
+				log.Printf("GATEWAY %s: D2R logon req%d has no BATTLENET_D2R_AUTH_RESPONSE", s.remote, h.requestID)
+				return true
+			}
+			s.send(buildRPCResponse(h.requestID, mustHex(responseHex)))
+			log.Printf("GATEWAY %s: D2R AuthSessionResponse answered (req%d)", s.remote, h.requestID)
 		}
 		return true
 	}

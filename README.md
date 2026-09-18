@@ -45,6 +45,8 @@ private notes.
 | `BATTLENET_AUTH_ACK`, `BATTLENET_AUTH_ACK_REQ` | The bare 0xFE status-OK ack and the request id it addresses (`skip` drops it) |
 | `BATTLENET_METHOD13` | OnLogonQueueEnd payload hex (empty = empty message), `skip` drops it |
 | `BATTLENET_LOGON_RESULT`, `BATTLENET_LOGON_METHODS` | Push a LogonResult payload on the listed methods (default `4`); unknown methods are dropped silently by the client, so fan-outs are safe |
+| `BATTLENET_LOGON_SUCCESS` | Generate a successful method-5 LogonResult with correctly encoded account/game EntityIds and a fresh 64-byte session key |
+| `BATTLENET_D2R_AUTH_RESPONSE` | Hex payload returned to the post-logon D2R-services method-1 request as its AuthSessionResponse |
 | `BATTLENET_QUEUE_END` | Push a position-0 queue update one second after the burst |
 | `BATTLENET_METHOD5_HEX` | Method-5 payload (default `088a04`, the captured 522 rejection), `skip` drops it |
 | `BATTLENET_METHOD7_ECHO` | Answer the client's method-7 with a 0xFE status-OK |
