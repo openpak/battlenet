@@ -27,15 +27,22 @@ the NSO does carry RELA relocations, so vtables resolve exactly).
   Presence.BatchSubscribe (8), ChannelMembership.Subscribe (1) ×2,
   Resources.GetContentHandle (1), Account.GetAccountState (30),
   Presence.BatchSubscribe.
+- Header field 5 is the payload size on every frame, pushes included (the
+  captured "timeouts" 13/0/3 are exactly the payload lengths); a push with
+  5 = 0 is read with an empty body.
 - CreateSession (SessionService 0x1e688c05) must be answered with
   CreateSessionResponse {1: session_id} and followed by the push
   SessionListener.OnSessionCreated (0x7fe36b32, method 1)
   {1: identity, 2: reason, 3: session_id, 4: session_key}; without the push
-  the post-logon sequence never starts.
+  the post-logon sequence never starts. The handler (CSessionHandler
+  0xcf98f8 → 0x1ca438) with reason 0 stores field 3 as the session id and
+  sets OnlineStatus 4; non-zero reason → OnlineStatus 5.
 - ContentHandle (GetContentHandle's response) has required fields; an empty
   body does not parse.
-- Unexplained: ~15 s after logon the title calls DestroySession with an empty
-  session_id (send path 0xcf925c → 0xf4e060).
+- DestroySession's only sender is the Login state's stop (0x2073fc →
+  0x1ca838). It fired 15 s after every logon because the Login state timed
+  out (see below), carrying an empty id because our OnSessionCreated push
+  had header 5 = 0.
 
 ## D2R login (inside GameUtilities.ProcessTask)
 
@@ -44,10 +51,12 @@ ProcessTaskRequest attributes (bgs.protocol.v2.Attribute {1 name, 2 Variant
 "classic.protocol.v1.d2r_connection.LoginRequest", `protobuf_request` =
 LoginRequest bytes. The answer is ProcessTaskResponse {1: result attributes}
 with `client_response` = "classic.protocol.v1.d2r_connection.LoginResponse"
-and `protobuf_response` = LoginResponse bytes; a missing LoginResponse fails
-the logon with "Failed to authenticate". The web `check_token` answer carries
-the same pair as JSON (`protobuf_response` base64), and `result` is read as a
-number (0 = proceed).
+and `protobuf_response` = the raw LoginResponse bytes, **both as
+Variant.string_value (4)**: the callback (0x203d64) reads only that member,
+so a blob_value arrives as "" and parses as an empty LoginResponse. A
+missing or mismatched client_response fails the logon at once ("Failed to
+authenticate"). This is the only place LoginResponse is read — the HTTPS
+check_token call belongs to the web/NSA login (0x1eec9c), not to it.
 
 | Message | Fields |
 |---|---|
@@ -56,8 +65,15 @@ number (0 = proceed).
 
 ## D2R-services connection (going online)
 
-- Gate: the online state machine dials only when LoginResponse fields 1 and 2
-  are both non-empty and the bgs session is up.
+- The online flow runs as NetworkStateObjects (A, B = bgs online, Login,
+  Connect), each failed with error 666 if still running after 15 s (driver
+  0x1c4224). Login (enter 0x207360 sends LoginRequest; update 0x207490)
+  succeeds once LoginResponse fields 1 and 2 are stored; its stop sends
+  DestroySession. Connect (enter 0x207b30 → dial 0x204324; update 0x207c7c)
+  must see the D2R connection authenticated within 15 s.
+- Dial gate 0x204324: OnlineStatus == 4 (bgs logon state 5 = OnLogonComplete
+  succeeded, and CreateSession returned status 0), both LoginResponse strings
+  non-empty, and the session back-pointer set.
 - URL: field 1 with any `v1/rpc/client` removed, `/` ensured, then
   `OSI/v2/rpc/client` appended. Scheme `ws:` is plain (default port 8080),
   anything else TLS (default port 443); the host is the third `/`-separated

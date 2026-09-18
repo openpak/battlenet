@@ -53,7 +53,7 @@ func TestFrameFidelity(t *testing.T) {
 	// method 12: identical to the capture with frozen time.
 	method12 := append(pbVarint(1, 1), pbVarint(2, uint64(frozen.UnixMicro()))...)
 	method12 = append(method12, pbVarint(3, 0)...)
-	got12 := s.buildServerRPC(12, 2, 13, method12)
+	got12 := s.buildServerRPC(12, 2, method12)
 	want12 := "00300800100c1802280d5d350e24716a21444334454141364636413843443134392d30303030303030303030304333373833080110" +
 		hex.EncodeToString(pbLen(uint64(frozen.UnixMicro()))) + "1800"
 	if hex.EncodeToString(got12) != want12 {
@@ -61,12 +61,12 @@ func TestFrameFidelity(t *testing.T) {
 	}
 
 	// method 13 and method 5: captured verbatim.
-	got13 := s.buildServerRPC(13, 3, 0, nil)
+	got13 := s.buildServerRPC(13, 3, nil)
 	want13, _ := hex.DecodeString("00300800100d180328005d350e24716a21444334454141364636413843443134392d30303030303030303030304333373833")
 	if !bytes.Equal(got13, want13) {
 		t.Fatalf("method13 mismatch:\n got %x\nwant %x", got13, want13)
 	}
-	got5 := s.buildServerRPC(5, 4, 3, mustHex("088a04"))
+	got5 := s.buildServerRPC(5, 4, mustHex("088a04"))
 	want5, _ := hex.DecodeString("003008001005180428035d350e24716a21444334454141364636413843443134392d30303030303030303030304333373833088a04")
 	if !bytes.Equal(got5, want5) {
 		t.Fatalf("method5 mismatch:\n got %x\nwant %x", got5, want5)
@@ -144,6 +144,7 @@ func TestLoggedOnRouting(t *testing.T) {
 		mustHex("0a450a0f636c69656e745f726573706f6e7365"), // result{name "client_response"
 		pbBytes(1, []byte("wss://us.actual.battle.net:1119")),
 		pbBytes(2, []byte("openpak:4152366661")),
+		pbBytes(4, loginResponse("4152366661")), // Variant.string_value, raw bytes
 	} {
 		if !bytes.Contains(login, want) {
 			t.Fatalf("LoginResponse missing %x:\n%x", want, login)

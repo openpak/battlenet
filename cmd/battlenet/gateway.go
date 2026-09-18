@@ -270,24 +270,26 @@ func (s *gatewaySession) buildConnectResponse() []byte {
 	return append(out, msg...)
 }
 
-// buildServerRPC builds a server-initiated ConnectionService frame: header
-// {service 0, method, server request id, timeout, constant field 11, session
-// id at field 13} plus message. Shapes captured: method 12 carries
+// buildServerRPC builds a server-initiated AuthenticationClient frame:
+// header {service 0, method, server request id, payload size, service hash
+// at field 11, field 13 as captured} plus message. Shapes captured: method 12 carries
 // {1: 1, 2: server clock µs, 3: 0}; method 13 an empty message; method 5 the
 // logon timeout value {1: 522}.
-func (s *gatewaySession) buildServerRPC(method, requestID, timeout uint64, msg []byte) []byte {
-	return s.buildPush(authClientHash, method, requestID, timeout, msg)
+func (s *gatewaySession) buildServerRPC(method, requestID uint64, msg []byte) []byte {
+	return s.buildPush(authClientHash, method, requestID, msg)
 }
 
 // buildPush addresses a server-initiated call to the listener with the given
-// service hash; the session id rides at field 13 as captured.
-func (s *gatewaySession) buildPush(hash uint32, method, requestID, timeout uint64, msg []byte) []byte {
+// service hash. Header field 5 is the payload size (the captured "timeouts"
+// 13/0/3 were exactly the payload lengths); with 5 = 0 the body is read as
+// empty. Field 13 carries the connection id as captured.
+func (s *gatewaySession) buildPush(hash uint32, method, requestID uint64, msg []byte) []byte {
 	var h [4]byte
 	binary.LittleEndian.PutUint32(h[:], hash)
 	header := pbVarint(1, 0)
 	header = append(header, pbVarint(2, method)...)
 	header = append(header, pbVarint(3, requestID)...)
-	header = append(header, pbVarint(5, timeout)...)
+	header = append(header, pbVarint(5, uint64(len(msg)))...)
 	header = append(header, pbFixed32(11, h[:])...)
 	header = append(header, pbBytes(13, []byte(s.sid))...)
 	out := make([]byte, 2, 2+len(header)+len(msg))
@@ -419,7 +421,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 			}
 			if len(method12) > 0 {
 				method12 = append(pbVarint(2, uint64(now().UnixMicro())), method12...)
-				s.send(s.buildServerRPC(12, 2, 13, method12))
+				s.send(s.buildServerRPC(12, 2, method12))
 			}
 			// The captured bare status-OK (0xFE/req-3). BATTLENET_AUTH_ACK_REQ
 			// re-addresses it — in our sessions the client's auth Connect is
@@ -441,7 +443,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 				if p != "" {
 					payload = mustHex(p)
 				}
-				s.send(s.buildServerRPC(13, 3, 0, payload))
+				s.send(s.buildServerRPC(13, 3, payload))
 			}
 			// BATTLENET_LOGON_RESULT: hex payload pushed as OnLogonComplete.
 			// BATTLENET_LOGON_METHODS lists candidate method numbers (the
@@ -451,7 +453,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 			if lr := env("BATTLENET_LOGON_RESULT", ""); lr != "" {
 				for _, m := range strings.Split(env("BATTLENET_LOGON_METHODS", "4"), ",") {
 					if n, err := strconv.ParseUint(strings.TrimSpace(m), 0, 64); err == nil {
-						s.send(s.buildServerRPC(n, 5, 0, mustHex(lr)))
+						s.send(s.buildServerRPC(n, 5, mustHex(lr)))
 					}
 				}
 				log.Printf("GATEWAY %s: LogonResult pushed", s.remote)
@@ -463,7 +465,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 				s.arm(time.Second, func() {
 					p := append(pbVarint(1, 0), pbVarint(2, uint64(now().UnixMicro()))...)
 					p = append(p, pbVarint(3, 0)...)
-					s.send(s.buildServerRPC(12, 6, 0, p))
+					s.send(s.buildServerRPC(12, 6, p))
 					log.Printf("GATEWAY %s: queue-end (position 0) pushed", s.remote)
 				})
 			}
@@ -474,10 +476,10 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 					log.Printf("GATEWAY %s: successful LogonResult: %v", s.remote, err)
 					return false
 				}
-				s.send(s.buildServerRPC(5, 4, 0, result))
+				s.send(s.buildServerRPC(5, 4, result))
 				log.Printf("GATEWAY %s: successful LogonResult pushed on method 5", s.remote)
 			} else if !strings.EqualFold(method5Payload, "skip") {
-				s.send(s.buildServerRPC(5, 4, 3, mustHex(method5Payload)))
+				s.send(s.buildServerRPC(5, 4, mustHex(method5Payload)))
 			}
 			s.stage = stageAuthenticated
 			// BATTLENET_GATEWAY_HOLD: skip the logon_timeout+close. The
@@ -562,7 +564,7 @@ func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
 		}
 		id := hex.EncodeToString(sessionID)
 		resp = pbBytes(1, []byte(id)) // CreateSessionResponse.session_id
-		push = s.buildPush(sessionListener, 1, 5, 0, sessionCreated(h.body, id))
+		push = s.buildPush(sessionListener, 1, 5, sessionCreated(h.body, id))
 	case bgsKey{gameUtilitiesHash, 1}: // ProcessTask: the D2R login rides here
 		if !bytes.Contains(h.body, []byte("d2r_connection.LoginRequest")) {
 			break
@@ -597,13 +599,16 @@ func loginResponse(subject string) []byte {
 
 // d2rLoginResponse wraps the LoginResponse in the ProcessTaskResponse
 // attributes that mirror the request's client_request/protobuf_request pair
-// (bgs.protocol.v2.Attribute {1: name, 2: Variant {4: string, 5: blob}}).
+// (bgs.protocol.v2.Attribute {1: name, 2: Variant {4: string_value}}).
 func d2rLoginResponse(subject string) []byte {
 	attr := func(name string, value []byte) []byte {
 		return pbBytes(1, append(pbBytes(1, []byte(name)), pbBytes(2, value)...))
 	}
 	out := attr("client_response", pbBytes(4, []byte("classic.protocol.v1.d2r_connection.LoginResponse")))
-	return append(out, attr("protobuf_response", pbBytes(5, loginResponse(subject)))...)
+	// Both values must be Variant.string_value (4): the title reads only
+	// that member, so a blob_value arrives as "" and parses as an empty
+	// LoginResponse. protobuf_response carries the raw bytes, not base64.
+	return append(out, attr("protobuf_response", pbBytes(4, loginResponse(subject)))...)
 }
 
 // sessionCreated builds SessionCreatedNotification {1: identity, 2: reason 0,
