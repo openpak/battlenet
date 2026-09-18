@@ -92,4 +92,8 @@ game_version.GameUpdateRequest.
 - Frame format and Header field meanings on the D2R-services WebSocket, and
   the exact AuthSession response bytes (decode in progress; first capture
   pending).
-- The empty-session DestroySession above.
+- The empty-session DestroySession above. 2026-09-18 21:23–21:29: with the
+  corrected LoginResponse served in-band at logon, DestroySession still
+  followed at +15 s, and pressing Online five minutes later dialed nothing —
+  the connect step also requires the bgs session state, so the teardown is
+  the prime suspect for the missing dial.
