@@ -228,23 +228,18 @@ func main() {
 
 			log.Printf("CHECK_TOKEN issued session for battlenet subject %s", subject)
 
-			// The D2 layer parses this answer field by field — the binary's
-			// parse cluster reads exactly: "result" ("Failed to parse
-			// result."), "country_alpha2", then "client_response", which it
-			// decodes as a classic.protocol.v1.d2r_connection.LoginResponse
-			// protobuf ("Failed to find/parse LoginResponse as
-			// client_response in game util response"). The LoginResponse
-			// payload is whatever BATTLENET_LOGIN_RESPONSE_B64 carries, so
-			// candidate shapes iterate by restarting the unit, not by
-			// rebuilding: each run's log names the next requirement.
-			clientResponse := env("BATTLENET_LOGIN_RESPONSE_B64", "")
+			// The D2 layer reads "result", "country_alpha2", then
+			// "client_response" — the LoginResponse TYPE NAME — and parses
+			// base64 "protobuf_response" as that message, the same pair the
+			// in-band ProcessTask answer carries.
 			if tmpl := env("BATTLENET_CHECK_TOKEN_TEMPLATE", ""); tmpl != "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(strings.ReplaceAll(tmpl, "${UID}", subject)))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"result":"OK","country_alpha2":"US","client_response":%q,"uid":%q,"account_id":%q,"region":"US","program":"osi","platform":"swch"}`, clientResponse, subject, subject)
+			fmt.Fprintf(w, `{"result":"OK","country_alpha2":"US","client_response":%q,"protobuf_response":%q,"uid":%q,"account_id":%q,"region":"US","program":"osi","platform":"swch"}`,
+				"classic.protocol.v1.d2r_connection.LoginResponse", base64.StdEncoding.EncodeToString(loginResponse(subject)), subject, subject)
 			return
 		}
 
@@ -510,11 +505,14 @@ func serveGateway(c net.Conn) {
 	}
 }
 
-// rpcHeader carries the three header fields the routing decision needs.
+// rpcHeader carries the header fields the routing decision needs, and the
+// message body that follows the header.
 type rpcHeader struct {
-	serviceID uint64
-	methodID  uint64
-	requestID uint64
+	serviceID   uint64
+	methodID    uint64
+	requestID   uint64
+	serviceHash uint32 // field 11: FNV-1a of the target service's name
+	body        []byte
 }
 
 // parseRPCHeader reads the bnet.protocol.Header fields out of an RPC packet
@@ -529,6 +527,7 @@ func parseRPCHeader(packet []byte) rpcHeader {
 		size = len(packet) - 2
 	}
 	body := packet[2 : 2+size]
+	h.body = packet[2+size:]
 
 	for i := 0; i < len(body); {
 		tag := body[i]
@@ -558,6 +557,9 @@ func parseRPCHeader(packet []byte) rpcHeader {
 		case 1: // fixed64
 			i += 8
 		case 5: // fixed32
+			if field == 11 && i+4 <= len(body) {
+				h.serviceHash = binary.LittleEndian.Uint32(body[i:])
+			}
 			i += 4
 		case 2: // length-delimited
 			var l uint64

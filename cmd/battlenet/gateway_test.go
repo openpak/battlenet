@@ -110,3 +110,41 @@ func TestRPCResponse(t *testing.T) {
 		t.Fatalf("RPC response mismatch:\n got %x\nwant %x", got, want)
 	}
 }
+
+func TestLoggedOnRouting(t *testing.T) {
+	// Captured GenerateWebCredentials request: hash at header field 11,
+	// body {1: program "OSI"} after the header.
+	h := parseRPCHeader(mustHex("000b0800100818025d01fcec0d0d49534f00"))
+	if h.serviceHash != authServerHash || h.methodID != 8 || h.requestID != 2 {
+		t.Fatalf("header: %+v", h)
+	}
+	if !bytes.Equal(h.body, mustHex("0d49534f00")) {
+		t.Fatalf("body %x", h.body)
+	}
+	if got := bgsName(sessionServiceHash, 1); got != "SessionService.CreateSession" {
+		t.Fatalf("name %q", got)
+	}
+
+	// OnSessionCreated echoes CreateSessionRequest identity and session_key.
+	identity := mustHex("0a050d451680f7")
+	req := append(pbBytes(1, identity), pbFixed32(2, []byte("hcwS"))...)
+	req = append(req, pbVarint(5, 1)...)
+	req = append(req, pbBytes(7, []byte("key"))...)
+	want := append(pbBytes(1, identity), pbVarint(2, 0)...)
+	want = append(want, pbBytes(3, []byte("sid"))...)
+	want = append(want, pbBytes(4, []byte("key"))...)
+	if got := sessionCreated(req, "sid"); !bytes.Equal(got, want) {
+		t.Fatalf("OnSessionCreated:\n got %x\nwant %x", got, want)
+	}
+
+	// ProcessTaskResponse: two v2.Attributes, the LoginResponse as a blob.
+	login := d2rLoginResponse("4152366661")
+	for _, want := range [][]byte{
+		mustHex("0a450a0f636c69656e745f726573706f6e7365"), // result{name "client_response"
+		[]byte("\x0a\x0a4152366661\x12\x02US\x18\x00\x22\x1d\x0a\x19us.actual.battle.net:1119\x28\x01"),
+	} {
+		if !bytes.Contains(login, want) {
+			t.Fatalf("LoginResponse missing %x:\n%x", want, login)
+		}
+	}
+}

@@ -25,6 +25,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
@@ -35,6 +36,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Captured constants (research-2026-09-13.md, 2026-09-14 relay sessions).
@@ -47,9 +50,14 @@ const (
 	// logon_timeout (method 4), sent 3 s after the authenticated burst —
 	// after which the real gateway closes the WebSocket (opcode 8).
 	logonTimeoutHex = "000d08001004180528055d91694465088a041200"
-	// Header field 11 of every server-initiated frame: a fixed32 protocol
-	// constant, not a timestamp (identical across sessions weeks apart).
-	headerEpochHex = "350e2471"
+	// Header field 11 is the target service hash (FNV-1a of its bnet name).
+	// Every captured server push goes to AuthenticationClient.
+	authClientHash     = uint32(0x71240e35)
+	sessionServiceHash = uint32(0x1e688c05)
+	sessionListener    = uint32(0x7fe36b32)
+	authServerHash     = uint32(0x0decfc01)
+	gameUtilitiesHash  = uint32(0x5dbb51c2)
+	resourcesHash      = uint32(0xecbe75ba)
 	// The region/depot descriptor inside the ConnectResponse (field 8):
 	// the SU/US region, content-address hash and prod.depot.battle.net URL.
 	// Constant across every observed session.
@@ -216,15 +224,21 @@ func buildSuccessfulLogonResult(subject string) ([]byte, error) {
 	return result, nil
 }
 
-// serverRequestID builds the shared header tail of server-initiated frames:
-// the protocol-constant field 11 and, where observed, the session id at
-// field 13.
-func serverRequestID(s *gatewaySession, withSID bool) []byte {
-	out := pbFixed32(11, mustHex(headerEpochHex))
-	if withSID {
-		out = append(out, pbBytes(13, []byte(s.sid))...)
+type bgsKey struct {
+	hash   uint32
+	method uint64
+}
+
+type bgsMethod struct {
+	name   string
+	oneway bool
+}
+
+func bgsName(hash uint32, method uint64) string {
+	if m, ok := bgsMethods[bgsKey{hash, method}]; ok {
+		return m.name
 	}
-	return out
+	return fmt.Sprintf("unknown(%#08x).%d", hash, method)
 }
 
 // buildConnectResponse answers the anonymous ConnectionService.Connect
@@ -262,15 +276,34 @@ func (s *gatewaySession) buildConnectResponse() []byte {
 // {1: 1, 2: server clock µs, 3: 0}; method 13 an empty message; method 5 the
 // logon timeout value {1: 522}.
 func (s *gatewaySession) buildServerRPC(method, requestID, timeout uint64, msg []byte) []byte {
-	header := pbVarint(1, 0) // service 0 = ConnectionService
+	return s.buildPush(authClientHash, method, requestID, timeout, msg)
+}
+
+// buildPush addresses a server-initiated call to the listener with the given
+// service hash; the session id rides at field 13 as captured.
+func (s *gatewaySession) buildPush(hash uint32, method, requestID, timeout uint64, msg []byte) []byte {
+	var h [4]byte
+	binary.LittleEndian.PutUint32(h[:], hash)
+	header := pbVarint(1, 0)
 	header = append(header, pbVarint(2, method)...)
 	header = append(header, pbVarint(3, requestID)...)
 	header = append(header, pbVarint(5, timeout)...)
-	header = append(header, serverRequestID(s, true)...)
+	header = append(header, pbFixed32(11, h[:])...)
+	header = append(header, pbBytes(13, []byte(s.sid))...)
 	out := make([]byte, 2, 2+len(header)+len(msg))
 	binary.BigEndian.PutUint16(out, uint16(len(header)))
 	out = append(out, header...)
 	return append(out, msg...)
+}
+
+// buildRPCStatus answers a request with an error status and no body.
+func buildRPCStatus(requestID, status uint64) []byte {
+	header := pbVarint(1, 0xFE)
+	header = append(header, pbVarint(3, requestID)...)
+	header = append(header, pbVarint(6, status)...)
+	out := make([]byte, 2, 2+len(header))
+	binary.BigEndian.PutUint16(out, uint16(len(header)))
+	return append(out, header...)
 }
 
 // buildRPCResponse returns a successful response to a client request. The
@@ -491,30 +524,125 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 			s.send(buildRPCResponse(h.requestID, nil))
 			log.Printf("GATEWAY %s: method-7 answered (0xFE/req%d status-OK)", s.remote, h.requestID)
 		}
-		// After a successful BGS OnLogonComplete, D2R asks for web
-		// credentials (method 8) and then logs on to D2R services (method 1)
-		// over this same bindless connection. The method-1 payload echoes the
-		// account/game ids and 64-byte session key from our LogonResult.
-		if env("BATTLENET_LOGON_SUCCESS", "") != "" && h.methodID == 8 {
-			credential := make([]byte, 32)
-			if _, err := crand.Read(credential); err != nil {
-				log.Printf("GATEWAY %s: web credential entropy: %v", s.remote, err)
-				return false
-			}
-			s.send(buildRPCResponse(h.requestID, pbBytes(1, credential)))
-			log.Printf("GATEWAY %s: GenerateWebCredentials answered (req%d)", s.remote, h.requestID)
-		}
-		if env("BATTLENET_LOGON_SUCCESS", "") != "" && h.methodID == 1 {
-			responseHex := env("BATTLENET_D2R_AUTH_RESPONSE", "")
-			if responseHex == "" {
-				log.Printf("GATEWAY %s: D2R logon req%d has no BATTLENET_D2R_AUTH_RESPONSE", s.remote, h.requestID)
-				return true
-			}
-			s.send(buildRPCResponse(h.requestID, mustHex(responseHex)))
-			log.Printf("GATEWAY %s: D2R AuthSessionResponse answered (req%d)", s.remote, h.requestID)
+		if env("BATTLENET_LOGON_SUCCESS", "") != "" {
+			return s.answerLoggedOn(h)
 		}
 		return true
 	}
+}
+
+// answerLoggedOn serves the title once the logon completed: every request
+// is named from the descriptor table and answered, so the client never
+// stalls on a silent RPC. Requests with a known response shape get it;
+// the rest get an empty status-OK (all response fields are optional).
+func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
+	if h.serviceID == 0xFE { // the client answering one of our pushes
+		return true
+	}
+	key := bgsKey{h.serviceHash, h.methodID}
+	name := bgsName(h.serviceHash, h.methodID)
+	if bgsMethods[key].oneway {
+		log.Printf("GATEWAY %s: %s (oneway, req%d)", s.remote, name, h.requestID)
+		return true
+	}
+	var resp, push []byte
+	switch key {
+	case bgsKey{authServerHash, 8}: // GenerateWebCredentials {1: web_credentials}
+		credential := make([]byte, 32)
+		if _, err := crand.Read(credential); err != nil {
+			log.Printf("GATEWAY %s: web credential entropy: %v", s.remote, err)
+			return false
+		}
+		resp = pbBytes(1, credential)
+	case bgsKey{sessionServiceHash, 1}: // CreateSession
+		sessionID := make([]byte, 16)
+		if _, err := crand.Read(sessionID); err != nil {
+			log.Printf("GATEWAY %s: session id entropy: %v", s.remote, err)
+			return false
+		}
+		id := hex.EncodeToString(sessionID)
+		resp = pbBytes(1, []byte(id)) // CreateSessionResponse.session_id
+		push = s.buildPush(sessionListener, 1, 5, 0, sessionCreated(h.body, id))
+	case bgsKey{gameUtilitiesHash, 1}: // ProcessTask: the D2R login rides here
+		if !bytes.Contains(h.body, []byte("d2r_connection.LoginRequest")) {
+			break
+		}
+		resp = d2rLoginResponse(s.subject)
+	case bgsKey{resourcesHash, 1}:
+		// GetContentHandle's ContentHandle has required fields, so an empty
+		// body cannot parse; refuse cleanly instead (ERROR_NOT_EXISTS).
+		s.send(buildRPCStatus(h.requestID, 4))
+		log.Printf("GATEWAY %s: %s refused (req%d, status 4)", s.remote, name, h.requestID)
+		return true
+	}
+	s.send(buildRPCResponse(h.requestID, resp))
+	log.Printf("GATEWAY %s: %s answered (req%d, %d-byte body)", s.remote, name, h.requestID, len(resp))
+	if push != nil {
+		s.send(push)
+		log.Printf("GATEWAY %s: SessionListener.OnSessionCreated pushed", s.remote)
+	}
+	return true
+}
+
+// loginResponse encodes classic.protocol.v1.d2r_connection.LoginResponse
+// {1: account id, 2: region, 3: 0, 4: D2rServicesConnection {1: address,
+// 5: 1}}. The title reads it twice: in-band from ProcessTask at logon, and
+// from check_token's protobuf_response when it goes online.
+func loginResponse(subject string) []byte {
+	services := pbBytes(1, []byte("us.actual.battle.net:1119"))
+	services = append(services, pbVarint(5, 1)...)
+	login := pbBytes(1, []byte(subject))
+	login = append(login, pbBytes(2, []byte("US"))...)
+	login = append(login, pbVarint(3, 0)...)
+	return append(login, pbBytes(4, services)...)
+}
+
+// d2rLoginResponse wraps the LoginResponse in the ProcessTaskResponse
+// attributes that mirror the request's client_request/protobuf_request pair
+// (bgs.protocol.v2.Attribute {1: name, 2: Variant {4: string, 5: blob}}).
+func d2rLoginResponse(subject string) []byte {
+	attr := func(name string, value []byte) []byte {
+		return pbBytes(1, append(pbBytes(1, []byte(name)), pbBytes(2, value)...))
+	}
+	out := attr("client_response", pbBytes(4, []byte("classic.protocol.v1.d2r_connection.LoginResponse")))
+	return append(out, attr("protobuf_response", pbBytes(5, loginResponse(subject)))...)
+}
+
+// sessionCreated builds SessionCreatedNotification {1: identity, 2: reason 0,
+// 3: session_id, 4: session_key} from the CreateSessionRequest, whose
+// identity (field 1) and session_key (field 7) are echoed back.
+func sessionCreated(req []byte, sessionID string) []byte {
+	var identity, key []byte
+	for b := req; len(b) > 0; {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			break
+		}
+		b = b[n:]
+		if typ == protowire.BytesType {
+			v, m := protowire.ConsumeBytes(b)
+			if m < 0 {
+				break
+			}
+			switch num {
+			case 1:
+				identity = v
+			case 7:
+				key = v
+			}
+			b = b[m:]
+			continue
+		}
+		m := protowire.ConsumeFieldValue(num, typ, b)
+		if m < 0 {
+			break
+		}
+		b = b[m:]
+	}
+	out := pbBytes(1, identity)
+	out = append(out, pbVarint(2, 0)...)
+	out = append(out, pbBytes(3, []byte(sessionID))...)
+	return append(out, pbBytes(4, key)...)
 }
 
 // extractFirstJWT pulls the first JWT-looking string out of a frame payload
