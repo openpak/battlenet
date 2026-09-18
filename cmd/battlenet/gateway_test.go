@@ -137,11 +137,13 @@ func TestLoggedOnRouting(t *testing.T) {
 		t.Fatalf("OnSessionCreated:\n got %x\nwant %x", got, want)
 	}
 
-	// ProcessTaskResponse: two v2.Attributes, the LoginResponse as a blob.
+	// ProcessTaskResponse: two v2.Attributes, the LoginResponse as a blob,
+	// whose field 1 is the D2R-services base URL and field 2 the token.
 	login := d2rLoginResponse("4152366661")
 	for _, want := range [][]byte{
 		mustHex("0a450a0f636c69656e745f726573706f6e7365"), // result{name "client_response"
-		[]byte("\x0a\x0a4152366661\x12\x02US\x18\x00\x22\x1d\x0a\x19us.actual.battle.net:1119\x28\x01"),
+		pbBytes(1, []byte("wss://us.actual.battle.net:1119")),
+		pbBytes(2, []byte("openpak:4152366661")),
 	} {
 		if !bytes.Contains(login, want) {
 			t.Fatalf("LoginResponse missing %x:\n%x", want, login)

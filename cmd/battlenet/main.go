@@ -237,9 +237,13 @@ func main() {
 				w.Write([]byte(strings.ReplaceAll(tmpl, "${UID}", subject)))
 				return
 			}
+			login := loginResponse(subject)
+			if override := env("BATTLENET_LOGIN_RESPONSE_HEX", ""); override != "" {
+				login = mustHex(override)
+			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"result":"OK","country_alpha2":"US","client_response":%q,"protobuf_response":%q,"uid":%q,"account_id":%q,"region":"US","program":"osi","platform":"swch"}`,
-				"classic.protocol.v1.d2r_connection.LoginResponse", base64.StdEncoding.EncodeToString(loginResponse(subject)), subject, subject)
+			fmt.Fprintf(w, `{"result":%s,"country_alpha2":"US","client_response":%q,"protobuf_response":%q,"uid":%q,"account_id":%q,"region":"US","program":"osi","platform":"swch"}`,
+				env("BATTLENET_CHECK_TOKEN_RESULT", "0"), "classic.protocol.v1.d2r_connection.LoginResponse", base64.StdEncoding.EncodeToString(login), subject, subject)
 			return
 		}
 
@@ -397,16 +401,25 @@ func serveGateway(c net.Conn) {
 	// subprotocol echoed. The reason phrase is the real gateway's ("Web
 	// Socket Protocol Handshake" — captured 2026-09-14); the client accepted
 	// our "Switching Protocols" too, but byte-faithful is the doctrine.
+	// The D2R-services connection (LoginResponse field 1 + "/OSI/v2/rpc/client")
+	// shares this listener; its subprotocol, if any, is echoed.
+	d2r := bytes.Contains(bytes.SplitN(request, []byte("\r\n"), 2)[0], []byte("/v2/rpc/client"))
+	protocol := "v1.rpc.battle.net"
+	if d2r {
+		protocol = headerValue(request, "sec-websocket-protocol:")
+	}
 	accept := wsAccept(key)
 	response := "HTTP/1.1 101 Web Socket Protocol Handshake\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + accept + "\r\n" +
-		"Sec-WebSocket-Protocol: v1.rpc.battle.net\r\n\r\n"
-	if _, err := c.Write([]byte(response)); err != nil {
+		"Sec-WebSocket-Accept: " + accept + "\r\n"
+	if protocol != "" {
+		response += "Sec-WebSocket-Protocol: " + protocol + "\r\n"
+	}
+	if _, err := c.Write([]byte(response + "\r\n")); err != nil {
 		return
 	}
-	log.Printf("GATEWAY %s: websocket established (v1.rpc.battle.net)", remote)
+	log.Printf("GATEWAY %s: websocket established (%q, d2r services: %v)", remote, protocol, d2r)
 
 	// Frames: client frames are masked, so unmask before decoding. Binary
 	// frames carry the bnet RPC packet: u16 BE header_size + bnet.protocol
@@ -442,6 +455,12 @@ func serveGateway(c net.Conn) {
 					log.Printf("GATEWAY %s: ping answered", remote)
 					continue
 				case 2: // binary
+					if d2r {
+						if !handleD2RServices(ses, frame.payload) {
+							return
+						}
+						continue
+					}
 					if bytes.Contains(frame.payload, []byte("eyJ")) {
 						log.Printf("GATEWAY rpc in (%d bytes): [authentication payload redacted]", len(frame.payload))
 					} else {
@@ -718,9 +737,15 @@ func encodeWSFrame(opcode byte, payload []byte) []byte {
 }
 
 func websocketAcceptKey(request []byte) string {
+	return headerValue(request, "sec-websocket-key:")
+}
+
+// headerValue returns the value of the named request header (lowercase name
+// with its colon), or "".
+func headerValue(request []byte, name string) string {
 	for _, line := range strings.Split(string(request), "\r\n") {
-		if strings.HasPrefix(strings.ToLower(line), "sec-websocket-key:") {
-			return strings.TrimSpace(line[len("Sec-WebSocket-Key:"):])
+		if strings.HasPrefix(strings.ToLower(line), name) {
+			return strings.TrimSpace(line[len(name):])
 		}
 	}
 	return ""

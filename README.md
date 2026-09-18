@@ -50,6 +50,9 @@ private notes.
 | `BATTLENET_METHOD5_HEX` | Method-5 payload (default `088a04`, the captured 522 rejection), `skip` drops it |
 | `BATTLENET_METHOD7_ECHO` | Answer the client's method-7 with a 0xFE status-OK |
 | `BATTLENET_GATEWAY_HOLD` | Skip the logon_timeout + close; the session stays open |
+| `BATTLENET_D2R_SERVICES_URL` | LoginResponse field 1, the D2R-services WebSocket base the title dials when going online (default `wss://us.actual.battle.net:1119`; served on the gateway listener at `/OSI/v2/rpc/client`) |
+| `BATTLENET_LOGIN_RESPONSE_HEX` | Override check_token's LoginResponse (protobuf_response) with these bytes |
+| `BATTLENET_CHECK_TOKEN_RESULT` | check_token `result` as a raw JSON value (default `0`; the D2 layer reads it as a number) |
 | `BATTLENET_CHECK_TOKEN_TEMPLATE` | Full check_token JSON template with `${UID}`, overriding the built-in shape |
 
 ## Ground rules

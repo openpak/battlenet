@@ -584,17 +584,15 @@ func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
 	return true
 }
 
-// loginResponse encodes classic.protocol.v1.d2r_connection.LoginResponse
-// {1: account id, 2: region, 3: 0, 4: D2rServicesConnection {1: address,
-// 5: 1}}. The title reads it twice: in-band from ProcessTask at logon, and
-// from check_token's protobuf_response when it goes online.
+// loginResponse encodes classic.protocol.v1.d2r_connection.LoginResponse.
+// The title keeps only field 1, the D2R-services WebSocket base (it appends
+// "/OSI/v2/rpc/client"; ws: is plain, anything else TLS), and field 2, the
+// opaque token it sends back as AuthSessionRequest field 1. Both must be
+// non-empty or the online flow never dials. Fields 3 (bool) and 4
+// (GameUpdateRequest) are ignored by the client.
 func loginResponse(subject string) []byte {
-	services := pbBytes(1, []byte("us.actual.battle.net:1119"))
-	services = append(services, pbVarint(5, 1)...)
-	login := pbBytes(1, []byte(subject))
-	login = append(login, pbBytes(2, []byte("US"))...)
-	login = append(login, pbVarint(3, 0)...)
-	return append(login, pbBytes(4, services)...)
+	login := pbBytes(1, []byte(env("BATTLENET_D2R_SERVICES_URL", "wss://us.actual.battle.net:1119")))
+	return append(login, pbBytes(2, []byte("openpak:"+subject))...)
 }
 
 // d2rLoginResponse wraps the LoginResponse in the ProcessTaskResponse
