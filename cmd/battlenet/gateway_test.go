@@ -105,7 +105,7 @@ func TestSuccessfulLogonResult(t *testing.T) {
 
 func TestRPCResponse(t *testing.T) {
 	got := buildRPCResponse(3, []byte{0x0a, 0x01, 'x'})
-	want := mustHex("000708fe01180330000a0178")
+	want := mustHex("000908fe011803280330000a0178")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("RPC response mismatch:\n got %x\nwant %x", got, want)
 	}

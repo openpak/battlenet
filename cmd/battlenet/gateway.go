@@ -309,11 +309,13 @@ func buildRPCStatus(requestID, status uint64) []byte {
 }
 
 // buildRPCResponse returns a successful response to a client request. The
-// response service is 0xFE, the request id is echoed, and the response body
-// follows the header directly.
+// response service is 0xFE, the request id is echoed, field 5 carries the
+// body size (the captured ConnectResponse: 5 = 168 over a 168-byte body;
+// without it the body is read as empty), and the body follows the header.
 func buildRPCResponse(requestID uint64, msg []byte) []byte {
 	header := pbVarint(1, 0xFE)
 	header = append(header, pbVarint(3, requestID)...)
+	header = append(header, pbVarint(5, uint64(len(msg)))...)
 	header = append(header, pbVarint(6, 0)...)
 	out := make([]byte, 2, 2+len(header)+len(msg))
 	binary.BigEndian.PutUint16(out, uint16(len(header)))

@@ -27,9 +27,10 @@ the NSO does carry RELA relocations, so vtables resolve exactly).
   Presence.BatchSubscribe (8), ChannelMembership.Subscribe (1) ×2,
   Resources.GetContentHandle (1), Account.GetAccountState (30),
   Presence.BatchSubscribe.
-- Header field 5 is the payload size on every frame, pushes included (the
-  captured "timeouts" 13/0/3 are exactly the payload lengths); a push with
-  5 = 0 is read with an empty body.
+- Header field 5 is the payload size on every frame, pushes and responses
+  alike (the captured "timeouts" 13/0/3 and the ConnectResponse's 168 are
+  exactly the payload lengths); a frame without it is read with an empty
+  body.
 - CreateSession (SessionService 0x1e688c05) must be answered with
   CreateSessionResponse {1: session_id} and followed by the push
   SessionListener.OnSessionCreated (0x7fe36b32, method 1)
