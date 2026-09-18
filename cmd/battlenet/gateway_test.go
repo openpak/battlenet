@@ -150,3 +150,27 @@ func TestLoggedOnRouting(t *testing.T) {
 		}
 	}
 }
+
+func TestD2RServicesResponse(t *testing.T) {
+	// A request header as the client writes it (1–6, 9, 12), echoed back as
+	// the recipe decoded from the title: 1, 2, 3 echoed, 5 = 0, 9 = 1.
+	req := pbVarint(1, uint64(d2rServicesHash))
+	req = append(req, pbVarint(2, uint64(d2rAuthSession))...)
+	req = append(req, pbVarint(3, 1)...)
+	req = append(req, pbVarint(4, 77)...)
+	req = append(req, pbVarint(5, 2)...)
+	req = append(req, pbVarint(6, 0)...)
+	req = append(req, pbVarint(9, 0)...)
+	req = append(req, pbBytes(12, []byte("ws"))...)
+	packet := append([]byte{0, byte(len(req))}, req...)
+	packet = append(packet, 0x0a, 0x00)
+
+	h, ok := parseD2RHeader(packet)
+	if !ok || h.service != d2rServicesHash || h.method != d2rAuthSession || h.token != 1 || !bytes.Equal(h.body, []byte{0x0a, 0x00}) {
+		t.Fatalf("header %+v ok=%v", h, ok)
+	}
+	want := mustHex("001208a2d6daf50e10ee9e8ae80e180128004801")
+	if got := d2rResponse(h, nil); !bytes.Equal(got, want) {
+		t.Fatalf("response:\n got %x\nwant %x", got, want)
+	}
+}

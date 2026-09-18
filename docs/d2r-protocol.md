@@ -4,7 +4,8 @@ Facts recovered from the Diablo II: Resurrected (Switch, 1.0.34.0) binary and
 from our own gateway logs, recorded per the clean-room policy: field numbers,
 wire types, flow. Addresses are text VAs in the decompressed NSO (see
 `private notes` for the toolkit); the working
-scripts live in `/tmp/opencode/d2r/` (`pooldump.py`, `jtscan.py`).
+scripts live in `/tmp/opencode/d2r/` (`pooldump.py`, `jtscan.py`, `relocs.py` —
+the NSO does carry RELA relocations, so vtables resolve exactly).
 
 ## Sources
 
@@ -80,7 +81,29 @@ number (0 = proceed).
 | OnlineStats | 1–3 varint |
 | OfflineCookie / OfflineCookies / CookieUpdateRequest | {1 bytes, 2 string, 3 string, 4 varint} / {5 rep OfflineCookie} / {1 OfflineCookie} |
 | SessionDestroyedRequest, ClientPing, ServerPingRequest, ServerPingResponse | {1 varint} |
-| classic.protocol.Header | 1–5 u32, 6 u64, 9 varint, 12 string (meanings pending) |
+| classic.protocol.Header | 1 service hash, 2 method hash, 3 request token, 4 client check value, 5 payload size, 6 status (u64, 0 = OK), 9 is_response, 12 trace label (unread) |
+
+Framing and RPC (decoded from the send path 0x17ff050, receive path
+0x17fb93c, response match 0x17fc908/0x17fcd80, all high confidence):
+
+- Binary WebSocket messages, one RPC each: `[u16 BE header length]
+  [Header][payload]`; the payload is parsed with exactly Header.5 bytes.
+- A response is matched on field 3, and its parser is chosen by fields 1+2 —
+  so a response echoes 1, 2 and 3, sets 9 = 1 and 5 = body length; status
+  omitted means 0. Field 9 = 0 marks a server-initiated request (dispatched
+  on 1+2; checked against the client's field 4 when
+  `Rpc.WebSocket.UseCheckValue` is on).
+- AuthSession: service 0xeeb6ab22, method 0xed028f6e. Success needs status
+  0; the client then reads AuthSessionResponse field 9 (string) and field 10
+  (u32) into its "session started" event. Empty-token response bytes:
+  `0012 08a2d6daf50e 10ee9e8ae80e 1801 2800 4801`.
+- Next the client calls GameVersion.SetGameVersion (method 0xd48de460,
+  SetGameVersionRequest {1 string}, response classic.protocol.Empty; a
+  failure is only logged). SessionUpdate, SessionDestroyed, CookieUpdate and
+  ServerPing on D2rServicesConnection are server pushes, as are
+  GameVersion's GameUpdateRequired/GameUpdateCanceled.
+- Upgrade: most likely no Sec-WebSocket-Protocol from the client (the option
+  feeding it is left empty); no extensions should be accepted.
 
 Earlier names corrected by this decode: the layout once called
 AuroraAccountInfo is AuthSessionResponse; the parser at 0x16d917c is
@@ -89,9 +112,8 @@ game_version.GameUpdateRequest.
 
 ## Open
 
-- Frame format and Header field meanings on the D2R-services WebSocket, and
-  the exact AuthSession response bytes (decode in progress; first capture
-  pending).
+- First live capture of the D2R-services WebSocket (blocked on the dial
+  gate below).
 - The empty-session DestroySession above. 2026-09-18 21:23–21:29: with the
   corrected LoginResponse served in-band at logon, DestroySession still
   followed at +15 s, and pressing Online five minutes later dialed nothing —
