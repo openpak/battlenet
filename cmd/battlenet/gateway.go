@@ -614,8 +614,10 @@ func d2rLoginResponse(subject string) []byte {
 }
 
 // sessionCreated builds SessionCreatedNotification {1: identity, 2: reason 0,
-// 3: session_id, 4: session_key} from the CreateSessionRequest, whose
-// identity (field 1) and session_key (field 7) are echoed back.
+// 3: session_id, 4: session_key, 5: client_id} from the CreateSessionRequest,
+// whose identity (field 1) and session_key (field 7) are echoed back. The
+// title keeps field 5, not 3, as its session id (handler 0xcf98f8 → 0x1ca438);
+// it later rides as header client_id on ProcessTask and DestroySession.
 func sessionCreated(req []byte, sessionID string) []byte {
 	var identity, key []byte
 	for b := req; len(b) > 0; {
@@ -647,7 +649,8 @@ func sessionCreated(req []byte, sessionID string) []byte {
 	out := pbBytes(1, identity)
 	out = append(out, pbVarint(2, 0)...)
 	out = append(out, pbBytes(3, []byte(sessionID))...)
-	return append(out, pbBytes(4, key)...)
+	out = append(out, pbBytes(4, key)...)
+	return append(out, pbBytes(5, []byte(sessionID))...)
 }
 
 // extractFirstJWT pulls the first JWT-looking string out of a frame payload

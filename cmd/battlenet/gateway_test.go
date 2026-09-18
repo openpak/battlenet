@@ -133,6 +133,7 @@ func TestLoggedOnRouting(t *testing.T) {
 	want := append(pbBytes(1, identity), pbVarint(2, 0)...)
 	want = append(want, pbBytes(3, []byte("sid"))...)
 	want = append(want, pbBytes(4, []byte("key"))...)
+	want = append(want, pbBytes(5, []byte("sid"))...)
 	if got := sessionCreated(req, "sid"); !bytes.Equal(got, want) {
 		t.Fatalf("OnSessionCreated:\n got %x\nwant %x", got, want)
 	}

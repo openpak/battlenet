@@ -36,8 +36,13 @@ the NSO does carry RELA relocations, so vtables resolve exactly).
   SessionListener.OnSessionCreated (0x7fe36b32, method 1)
   {1: identity, 2: reason, 3: session_id, 4: session_key}; without the push
   the post-logon sequence never starts. The handler (CSessionHandler
-  0xcf98f8 → 0x1ca438) with reason 0 stores field 3 as the session id and
-  sets OnlineStatus 4; non-zero reason → OnlineStatus 5.
+  0xcf98f8 → 0x1ca438; parser 0xee8b84) with reason 0 stores **field 5
+  (client_id)** as the session id — not field 3 — sets OnlineStatus 4 and
+  clears the pending flag; non-zero reason → OnlineStatus 5. That id then
+  rides as bgs header client_id (13) on ProcessTask and DestroySession.
+- A 0xFE response is matched by 0xf564c4 on service_id 254 + token alone,
+  per connection (no is_response/object_id/method check). Pushes resolve
+  the service by header field 11 and the method by field 2.
 - ContentHandle (GetContentHandle's response) has required fields; an empty
   body does not parse.
 - DestroySession's only sender is the Login state's stop (0x2073fc →
@@ -131,8 +136,14 @@ game_version.GameUpdateRequest.
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
   gate below).
-- The empty-session DestroySession above. 2026-09-18 21:23–21:29: with the
-  corrected LoginResponse served in-band at logon, DestroySession still
-  followed at +15 s, and pressing Online five minutes later dialed nothing —
-  the connect step also requires the bgs session state, so the teardown is
-  the prime suspect for the missing dial.
+- Online still fails after the LoginResponse, size and client_id fixes
+  unless the client_id fix (2026-09-18, last deploy) resolves it: the
+  ProcessTask response bytes were walked byte by byte and pass every check
+  in the callback (status 0, client_response match, protobuf_response
+  present, parse OK → strings stored). A remaining +15 s DestroySession can
+  come from Login timing out OR from Connect timing out (both stop Login).
+  The client prints its failure reasons to stderr ("Received non-zero game
+  util response…", "Failed to find/parse LoginResponse…", "Error %lu: %s|
+  account=…" via 0x205224; error 666 = the 15 s state timeout), but the
+  Ryujinx guest log does not show them yet — capturing guest stderr would
+  settle which state fails.
