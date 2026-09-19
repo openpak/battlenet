@@ -41,6 +41,7 @@ private notes.
 | `GATEWAY_RELAY` | Pipe one session bidirectionally to the real gateway and log both sides |
 | `BATTLENET_CR_MODE=replay` | Replay the captured ConnectResponse verbatim instead of generating fresh |
 | `BATTLENET_AUTH_CR_STANDARD` | Answer the authenticated Connect with a standard 0xFE ConnectResponse (probed, not part of the dialect — unset in prod) |
+| `BATTLENET_PROCESSTASK_DELAY` | Probe: hold the ProcessTask (D2R login) answer this long (Go duration, e.g. `8s`) |
 | `BATTLENET_METHOD12_RESULT` | OnLogonQueueUpdate position value, or `skip` to drop the frame |
 | `BATTLENET_AUTH_ACK`, `BATTLENET_AUTH_ACK_REQ` | The bare 0xFE status-OK ack and the request id it addresses (`skip` drops it) |
 | `BATTLENET_METHOD13` | OnLogonQueueEnd payload hex (empty = empty message), `skip` drops it |

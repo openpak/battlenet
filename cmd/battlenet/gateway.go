@@ -572,6 +572,17 @@ func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
 			break
 		}
 		resp = d2rLoginResponse(s.subject)
+		// Probe: a late answer tells which 15 s state times out — the
+		// teardown stays at +15 s if Login rejects it, moves out if Login
+		// takes it and Connect is the one stuck.
+		if d, err := time.ParseDuration(env("BATTLENET_PROCESSTASK_DELAY", "")); err == nil {
+			frame := buildRPCResponse(h.requestID, resp)
+			s.arm(d, func() {
+				s.send(frame)
+				log.Printf("GATEWAY %s: %s answered after %s (req%d)", s.remote, name, d, h.requestID)
+			})
+			return true
+		}
 	case bgsKey{resourcesHash, 1}:
 		// GetContentHandle's ContentHandle has required fields, so an empty
 		// body cannot parse; refuse cleanly instead (ERROR_NOT_EXISTS).
