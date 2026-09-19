@@ -137,7 +137,8 @@ game_version.GameUpdateRequest.
 - First live capture of the D2R-services WebSocket (blocked on the dial
   gate below).
 - Online still fails after the LoginResponse, size and client_id fixes
-  unless the client_id fix (2026-09-18, last deploy) resolves it: the
+  (client_id confirmed live 2026-09-19: the id now rides on ProcessTask and
+  DestroySession, which still fires at +15 s): the
   ProcessTask response bytes were walked byte by byte and pass every check
   in the callback (status 0, client_response match, protobuf_response
   present, parse OK → strings stored). A remaining +15 s DestroySession can
