@@ -208,6 +208,66 @@ GameUpdateRequired/GameUpdateCanceled push hashes, Stats/Network/IGR
 method hashes. None is on the solo create/join path; the Ghidra project
 will settle them.
 
+## The blocker is in the emulator, not the gateway (2026-09-20 night)
+
+The Login-never-succeeds model is **wrong**. The 2026-09-20 15:58 UTC run
+(Ryujinx log `..._2026-09-20_16-58-22.log`, gateway session
+`10.89.2.14:51974`) lines up exactly:
+
+| emu time | wall (UTC) | event |
+|---|---|---|
+| 33.60 | 15:59:07.8 | bgs dial `eu.actual:1119`, poll → writable → TLS |
+| 33.74 | 15:59:07.9 | ProcessTask answered (149-byte body) |
+| 35.22 | 15:59:09.4 | **`us.actual:1119` dialled, fd 8, EINPROGRESS, SO_ERROR 0** |
+| 48.95 | 15:59:23.2 | DestroySession (= ProcessTask +15.2 s) |
+| 50.09 | 15:59:24.3 | `[D2BackendServices]: error: 666` |
+
+The dial only happens if the dial gate passed, so Login **does** succeed and
+stores both LoginResponse strings. What times out is Connect: the socket is
+opened and then never driven — no poll, no `ssl::CreateContext`, no
+ClientHello (matching the pcap).
+
+Why it is never driven: the D2R-services transport is **`nn::websocket`**
+(the Nintendo SDK library, not bgs-sdk's own TCP path that `eu.actual` uses).
+Its worker thread is one `select()` loop:
+
+- wakeup eventfd created at text 0x1060fe4 (`nn::socket::EventFd(0, 4)`),
+  stored in the global 0x1ea97e8; 22 `EventFdWrite` call sites kick it.
+- worker loop 0x106475c: FD_SET(wakeupfd) into readfds, add each connection
+  whose "already queued" flag (conn+0x23c) is clear and whose state
+  (conn+0x14) is in [3,8], then **`nn::socket::Select` at 0x1064cf8 with a
+  1 s timeval** (the constant pair at 0x1b3d800 is {1,0}).
+- 0x1064cfc–0x1064d34: only if `FD_ISSET(wakeupfd, readfds)` does it call
+  `nn::socket::EventFdRead` — the **only** drain of that fd in the binary.
+
+Ryujinx's `EventFileDescriptorPollManager.Select` is an unimplemented stub
+that returns `EOPNOTSUPP` without waiting and without ever setting
+`OutputEvents`. So:
+
+1. the wakeup fd is never reported readable → never drained → the worker
+   never learns it was woken;
+2. a select whose set is *only* the wakeup fd (every round in which the one
+   connection is already queued) returns **instantly** instead of sleeping
+   1 s, so the worker free-runs.
+
+The signature in the log is unmistakable: **1,050,789 `Write IPC fd=0`
+(eventfd) IPCs in ~62 s (~18 k/s), zero `Poll with eventfd`, zero deferred
+polls**, starting at the exact instant the `us.actual` socket is created and
+stopping when it is disposed. Ryujinx's Bsd service has one server thread, so
+that storm also starves every other socket IPC — which is why nothing else
+ever touches fd 8.
+
+The fork's existing deferred-poll machinery (`PollDeferRequested`,
+`PollInputSnapshot`, `CompleteReadyDeferredPolls`) fixes exactly this class of
+bug, but it lives only in `IClient.Poll`. `IClient.Select` has none of it, and
+`nn::websocket` uses select. A blocking eventfd select cannot simply be added:
+the `EventFdWrite` that would make it ready is an IPC on the same single Bsd
+thread, so it would deadlock — the fix has to defer, as Poll does.
+
+Gateway-side nothing is wrong on this path: LogonResult, CreateSession,
+ProcessTask (149 bytes) and GetAccountState (109 bytes) are all answered and
+accepted.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
