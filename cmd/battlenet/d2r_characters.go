@@ -66,7 +66,15 @@ func loadCharacters() {
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("CHARACTERS: reading %s: %v", path, err)
+			return
 		}
+		// First run. Write the empty roster now rather than at the first
+		// character creation: the volume was once mounted unwritable by the
+		// container user and the only sign was one line in the log at create
+		// time, by which point the player had already lost the character.
+		charMu.Lock()
+		saveCharactersLocked()
+		charMu.Unlock()
 		return
 	}
 	var st charStore
@@ -106,7 +114,9 @@ func saveCharactersLocked() {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		log.Printf("CHARACTERS: renaming onto %s: %v", path, err)
+		return
 	}
+	log.Printf("CHARACTERS: saved %d to %s", len(charList), path)
 }
 
 // parseCreateCharacter reads the request the client actually sends.
