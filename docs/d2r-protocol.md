@@ -132,6 +132,72 @@ AuroraAccountInfo is AuthSessionResponse; the parser at 0x16d917c is
 SessionUpdateRequest; the {1 string, 5 varint} parser at 0x17155d0 is
 game_version.GameUpdateRequest.
 
+## Full RPC surface (static map, 2026-09-20)
+
+Recovered from the Switch 1.0.34.0 binary after the /tmp toolkit was lost
+to a reboot: re-extracted with hactool from the surviving program NCA
+(ExeFS `main` + NSO0 LZ4 segments, byte-identical to the previous dump),
+then enumerated all 167 callers of the method-register function
+(`bl 0x1693770`). Each service has one init that stores its hash
+(`str w8,[x0,#8]` for classic services, `str w8,[x0]` for external ones)
+and registers (service, method, name) descriptors — classic layout
+`stp w8,wR,[sp,#0x30]` (method in w9, sometimes w10), external layout
+`stp w8,w9,[sp]` with the service reloaded (`ldr w25,[x19]`). Method names
+are corroborated by bare Ro strings and inline ASCII tails. Scripts live in
+`~/d2r-work/` (`analyze.py`, `sigscan.py`, `enum_methods.py`,
+`blockdump.py`, `constscan.py`, `resolve_names.py`, `methods.txt`);
+the Ghidra headless full analysis runs from `~/d2r-work/ghidra_proj/`.
+
+| Service | Hash | Method | Hash |
+|---|---|---|---|
+| D2rServicesConnection (init 0x16de3e4) | 0xeeb6ab22 | AuthSession | 0xed028f6e |
+| | | SessionUpdate | 0x6e824a4f |
+| | | SessionDestroyed | 0xf0652897 |
+| | | CookieUpdate | 0x4ae685fd |
+| | | ClientPing | 0xf1127ff6 |
+| | | ServerPing | 0x0644b9e5 |
+| GameVersion | 0x3d930f0e | SetGameVersion | 0xd48de460 |
+| Character (init 0x16c31d4) | 0x607fd196 | CreateCharacter | 0x043afeb5 |
+| | | DeleteCharacter | 0xa1d52098 |
+| | | ReadCharacterList | 0x47821811 |
+| | | UseCharacter | 0x6a706ac6 |
+| GameManagement (init 0x16fea74) | 0x110f2741 | GameCreate | 0x930fbb99 |
+| | | GameJoin | 0xa5cc1951 |
+| | | GameList | 0xa5ea9f6d |
+| | | GameDetail | 0xb5cd1354 |
+| | | GameCreateCancel | 0x38274117 |
+| | | GameCreateQueueTime | 0x5f2ddb05 |
+| | | GameGetSitePingList | 0xbb6dcaa4 |
+| Lobby (init 0x1730a64) | 0x7af1afbf | CreateLobby | 0x346da52d |
+| | | DisbandLobby | 0xb45831a2 |
+| | | LeaveLobby | 0xe5b584b2 |
+| | | KickFromLobby | 0x7203f2bb |
+| | | PromoteToLeader | 0x72c4d55f |
+| | | InviteToLobby | 0x2e8b08b7 |
+| | | NewInvite | 0xb94690de |
+| | | LobbyUpdate | 0x031762f8 |
+| | | LobbyKicked | 0x5f1c4880 |
+| | | SetLobbyMeta | 0xc4ebdab0 |
+| | | SetSelfMeta | 0x01e0592e |
+| | | SendChatMessage | 0x09733c0c |
+| | | ChatMessageRecv | 0x9ac3f052 |
+
+Confirmed along the way: ServerPing really is 0x0644b9e5 (bare
+`ServerPing` string referenced at 0x16e0038, inside that method's block),
+so 0xf1127ff6 is ClientPing — the pushed ServerPing already deployed in
+`d2r_services.go` names the right method. There is no JoinLobby: joining
+is GameManagement.GameJoin. The UI `bl 0x92872c` dispatcher hashes command
+names with FNV-1a64 (offset basis 0xcbf29ce484222325, prime
+0x100000001b3 — both visible as immediates) for the UI CommandDefinition
+map (`Could not find ExecuteCommandCallback: Online`); it is NOT the RPC
+layer (FNV of names matches no wire hash).
+
+Still open: ConvertCharacter's hash, GameManagement 0xa605d1e4's name,
+AcceptLobbyInvite/RejectLobbyInvite hashes, GameVersion's
+GameUpdateRequired/GameUpdateCanceled push hashes, Stats/Network/IGR
+method hashes. None is on the solo create/join path; the Ghidra project
+will settle them.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
