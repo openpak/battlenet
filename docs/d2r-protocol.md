@@ -409,6 +409,30 @@ II. The next decodes are `GameCreateResponse`, `GameJoinResponse` and
 `GameDetailPlayer` (0x18c029) and `GameListInfo` (0x1e0c85) — specifically
 which field carries the host address.
 
+## game_management response layouts (static, 2026-09-20)
+
+Recovered the same way as the character messages: find the type-name string,
+find its `GetTypeName` xref, bound the class block by the next one, and read
+the tag compares out of the parser. Blocks that still show one field number
+with two wire types contain more than one function, so those rows are the
+less certain ones and are marked.
+
+| Message | GetTypeName xref | Fields |
+|---|---|---|
+| GameDetailResponse | 0x16f9798 | 1 LEN, 2 LEN, 3 varint, 4 varint, 5 LEN, 6 varint, 7 varint, 8 varint, 9 LEN — no duplicates, high confidence |
+| GameDetailPlayer | 0x16f7748 | 1 LEN, 2 varint, 3 varint (a 3 LEN also appears in the block) |
+| GameJoinResponse | 0x16f2bfc | 1-4 ambiguous (varint and LEN both present), 5 LEN, 6-9 varint, 10 LEN |
+| GameListInfo | 0x16f5184 | 1 varint, 2 varint, 3 (both), 4 varint, 5 (both), 6 LEN, 7 LEN |
+| GameCreateResponse | 0x16f02c4 | 1 (both), 2 (both), 3 LEN, 4 LEN, 5 varint, 6 LEN, 7 LEN |
+| GameAttribute | 0x16ecba4 | 1 LEN, 2 LEN |
+
+Still unattributed: which field carries the host's address. The title is
+peer-hosted, so something in GameDetailResponse (or GameJoinResponse) must
+name the GameMaster — most likely one of the LEN fields holding
+`classic.protocol.v1.game_proxy.AddressInfo` or a host string. Do not fill any
+of these in by guessing; the client polls GameDetail every 3 s and a wrong
+answer is indistinguishable from no answer on screen.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
