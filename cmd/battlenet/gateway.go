@@ -58,6 +58,7 @@ const (
 	authServerHash     = uint32(0x0decfc01)
 	gameUtilitiesHash  = uint32(0x5dbb51c2)
 	resourcesHash      = uint32(0xecbe75ba)
+	accountServiceHash = uint32(0x62da0891)
 	// The region/depot descriptor inside the ConnectResponse (field 8):
 	// the SU/US region, content-address hash and prod.depot.battle.net URL.
 	// Constant across every observed session.
@@ -196,6 +197,65 @@ func pbFixed64Value(field, value uint64) []byte {
 func entityID(high, low uint64) []byte {
 	out := pbFixed64Value(1, high)
 	return append(out, pbFixed64Value(2, low)...)
+}
+
+// pbFixed32U32 encodes a fixed32 field from a uint32 (little-endian).
+// Program fourccs ride fixed32: 'OSI' is 0x004F5349.
+func pbFixed32U32(field uint64, v uint32) []byte {
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], v)
+	return pbFixed32(field, b[:])
+}
+
+// d2rProgram is the fixed32 program tag the D2R client uses ('OSI').
+const d2rProgram = uint32(0x004F5349)
+
+// buildAccountState answers AccountService.GetAccountState with a populated
+// GetAccountStateResponse {1: AccountState, 2: AccountFieldTags}, laid out
+// per bgs.protocol.account.v1 (descriptor pool embedded in the title —
+// account_service.proto + account_types.proto). An empty body parses but
+// carries no account-level session (the client logs "Failed to retrieve
+// account level session due to reason 4" and the D2R layer never starts), so
+// every identity the D2R layer keys on is filled: battle tag + country +
+// region at account level, the OSI game level, and the game-account handle
+// list the session is retrieved from.
+func buildAccountState(subject string) ([]byte, error) {
+	accountID, err := strconv.ParseUint(subject, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("battlenet subject %q is not numeric: %w", subject, err)
+	}
+
+	level := pbBytes(5, []byte("US"))                            // country
+	level = append(level, pbVarint(6, 1)...)                     // preferred_region: US
+	level = append(level, pbBytes(8, []byte("OpenPak#0001"))...) // battle_tag
+
+	gameLevel := pbBytes(8, []byte("OSI"))
+	gameLevel = append(gameLevel, pbFixed32U32(9, d2rProgram)...)
+
+	handle := pbFixed32U32(1, uint32(accountID))
+	handle = append(handle, pbFixed32U32(2, d2rProgram)...)
+	handle = append(handle, pbVarint(3, 1)...) // region: US
+	accounts := pbVarint(3, 1)
+	accounts = append(accounts, pbBytes(4, handle)...)
+
+	state := pbBytes(1, level)
+	state = append(state, pbBytes(5, gameLevel)...)
+	state = append(state, pbBytes(7, accounts)...)
+
+	programTag := pbFixed32U32(1, d2rProgram)
+	programTag = append(programTag, pbFixed32U32(2, 1)...)
+	regionTag := pbVarint(1, 1)
+	regionTag = append(regionTag, pbFixed32U32(2, 1)...)
+	tags := pbFixed32U32(2, 1)                     // account_level_info_tag
+	tags = append(tags, pbFixed32U32(3, 1)...)     // privacy_info_tag
+	tags = append(tags, pbFixed32U32(4, 1)...)     // parental_control_info_tag
+	tags = append(tags, pbBytes(7, programTag)...) // game_level_info_tags
+	tags = append(tags, pbBytes(9, programTag)...) // game_status_tags
+	tags = append(tags, pbBytes(11, regionTag)...) // game_account_tags
+	tags = append(tags, pbFixed32U32(12, 1)...)    // security_status_tag
+
+	out := pbBytes(1, state)
+	return append(out, pbBytes(2, tags)...), nil
 }
 
 // buildSuccessfulLogonResult constructs the public
@@ -589,6 +649,17 @@ func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
 		s.send(buildRPCStatus(h.requestID, 4))
 		log.Printf("GATEWAY %s: %s refused (req%d, status 4)", s.remote, name, h.requestID)
 		return true
+	case bgsKey{accountServiceHash, 30}: // GetAccountState
+		// The D2R layer retrieves its account-level session here; an empty
+		// body parses but leaves it unset ("Failed to retrieve account
+		// level session due to reason 4", and the game-server stage never
+		// starts), so the state is populated from the subject.
+		state, err := buildAccountState(s.subject)
+		if err != nil {
+			log.Printf("GATEWAY %s: account state: %v", s.remote, err)
+			return false
+		}
+		resp = state
 	}
 	s.send(buildRPCResponse(h.requestID, resp))
 	log.Printf("GATEWAY %s: %s answered (req%d, %d-byte body)", s.remote, name, h.requestID, len(resp))

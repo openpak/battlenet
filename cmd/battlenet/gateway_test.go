@@ -153,6 +153,32 @@ func TestLoggedOnRouting(t *testing.T) {
 	}
 }
 
+func TestAccountState(t *testing.T) {
+	got, err := buildAccountState("4152366661")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var prog, idLow [4]byte
+	binary.LittleEndian.PutUint32(prog[:], 0x004F5349)
+	binary.LittleEndian.PutUint32(idLow[:], uint32(4152366661))
+	for name, want := range map[string][]byte{
+		"country":              pbBytes(5, []byte("US")),
+		"battle tag":           pbBytes(8, []byte("OpenPak#0001")),
+		"game program":         append([]byte{byte(9<<3 | 5)}, prog[:]...),
+		"handle program":       append([]byte{byte(2<<3 | 5)}, prog[:]...),
+		"handle account id lo": append([]byte{byte(1<<3 | 5)}, idLow[:]...),
+	} {
+		if !bytes.Contains(got, want) {
+			t.Errorf("AccountState missing %s (%x): %x", name, want, got)
+		}
+	}
+
+	if _, err := buildAccountState("not-a-number"); err == nil {
+		t.Fatal("expected error for non-numeric subject")
+	}
+}
+
 func TestD2RAuthSessionAndPushes(t *testing.T) {
 	// AuthSessionResponse body: fields 1-8 at empty defaults, 9 = session
 	// id string, 10 = 0 (the two fields the session-started event reads).
