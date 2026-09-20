@@ -423,7 +423,7 @@ known offset (rather than from the noisy parser block).
 |---|---|---|
 | GameDetailResponse | 0x16f9798 | 1 LEN, 2 LEN, 3 varint, 4 varint, 5 LEN, 6 varint, 7 varint, 8 varint, 9 LEN — no duplicates, high confidence |
 | GameDetailPlayer | 0x16f7748 | 1 LEN, 2 varint, 3 varint (a 3 LEN also appears in the block) |
-| GameJoinResponse | 0x16f2bfc | **1 LEN, 2 varint, 3 varint, 4 varint, 5 LEN, 6 varint, 7 varint, 8 varint, 9 varint, 10 LEN** — high confidence; merge at 0x16f2824 maps presence bits 0–9 to fields 1–10 |
+| GameJoinResponse | 0x16f2bfc | **1 bytes, 2 uint32 (consumer narrows to uint16), 3 uint32, 4 uint32, 5 bytes, 6 bool, 7 uint32, 8 uint32, 9 optional uint32, 10 bytes** — high confidence; merge at 0x16f2824 maps presence bits 0–9 to fields 1–10, and the RPC adapter at 0x1649cc0 proves the concrete storage/consumer types |
 | GameListInfo | 0x16f5184 | 1 varint, 2 varint, 3 (both), 4 varint, 5 (both), 6 LEN, 7 LEN |
 | GameCreateResponse | 0x16f02c4 | 1 (both), 2 (both), 3 LEN, 4 LEN, 5 varint, 6 LEN, 7 LEN |
 | GameAttribute | 0x16ecba4 | 1 LEN, 2 LEN |
@@ -443,6 +443,15 @@ GetTypeName wrappers, not the consuming callback: that route is indirect
 through the client's RPC/vtable machinery. It adds no field attribution and
 is not grounds to send a guessed varint. The local trace artifact is
 `~/d2r-work/gamejoin-callback-trace.txt`.
+
+The callback was subsequently found from its diagnostic strings rather than
+from parser xrefs. `OnGameJoinSuccess` is at `0x1bb5e4`, and the RPC adapter at
+`0x1649cc0` copies every parsed field into the success event. This corrects
+one important type detail: field 6 is a boolean, field 2 is narrowed to 16
+bits, and field 9 preserves an explicit presence bit. The three LEN fields
+use the bytes parser rather than the UTF-8-validating string parser. The
+adapter forwards the fields but does not reveal their names. A minimal live
+probe of field 6 = true (`30 01`) is therefore the next bounded experiment.
 
 Still unattributed: which field carries the host's address. The title is
 peer-hosted, so something in GameDetailResponse (or GameJoinResponse) must

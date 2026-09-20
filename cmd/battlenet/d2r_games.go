@@ -74,8 +74,10 @@ type gameDetailTune struct {
 	// one-shot replies -- the client gets each exactly once and only then
 	// starts polling GameDetail -- so they are the likelier gate, and they
 	// cannot be probed by repetition the way GameDetail can. Hex rather than
-	// named fields because their layouts are not settled: GameJoinResponse's
-	// fields 1-4 still show two wire types each in the class block.
+	// named fields because their meanings are not settled. GameJoinResponse's
+	// wire layout is settled; notably field 6 is a bool, while the other
+	// varints are uint32 values (field 2 is narrowed to 16 bits by the result
+	// adapter).
 	CreateHex string `json:"create_hex"`
 	JoinHex   string `json:"join_hex"`
 }
