@@ -38,3 +38,38 @@ func TestCreateCharacterRoundTrip(t *testing.T) {
 		t.Fatalf("name missing from roster body %x", body)
 	}
 }
+
+// A deploy must not cost the player their character.
+func TestRosterSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BATTLENET_CHARACTER_STORE", dir+"/characters.json")
+
+	charMu.Lock()
+	charList = nil
+	charNext = 1
+	charMu.Unlock()
+
+	if _, ok := handleCharacterRPC(&gatewaySession{remote: "test"}, d2rHeader{
+		service: characterHash,
+		method:  charCreate,
+		body:    append(append(pbBytes(1, []byte("Hansolo")), pbVarint(2, 4)...), pbVarint(3, 0)...),
+	}); !ok {
+		t.Fatal("CreateCharacter not handled")
+	}
+
+	// Wipe memory the way a restart does, then reload from disk.
+	charMu.Lock()
+	charList = nil
+	charNext = 1
+	charMu.Unlock()
+	loadCharacters()
+
+	charMu.Lock()
+	defer charMu.Unlock()
+	if len(charList) != 1 || charList[0].Name != "Hansolo" || charList[0].Class != 4 {
+		t.Fatalf("roster after restart: %+v", charList)
+	}
+	if charNext != 2 {
+		t.Fatalf("next id after restart = %d, want 2", charNext)
+	}
+}

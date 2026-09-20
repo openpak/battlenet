@@ -121,6 +121,10 @@ func main() {
 	// timeout, and seconds-only logs made the two indistinguishable.
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// The D2R roster outlives the process: a deploy used to cost the player
+	// their character.
+	loadCharacters()
+
 	addr := env("BATTLENET_HTTP_ADDR", ":21500")
 
 	// BATTLENET_IDENTITY_STUB: run the gateway without the account core (the

@@ -1,7 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -30,14 +34,79 @@ type d2rCharacter struct {
 	ID    uint64
 }
 
-// ponytail: process memory, one roster for the whole box. This is a single
-// dev console talking to a single account; give it a store per subject (and
-// something on disk) when a second account exists.
+// One roster for the whole box, mirrored to disk. It began as process memory
+// with a note to persist it "when a second account exists"; what actually
+// forced the issue was deploys — every service restart wiped the character and
+// the player had to make a new one before they could test anything.
+//
+// ponytail: one JSON file, rewritten whole on each change. A roster is a
+// handful of entries written once per character creation; reach for a real
+// store when something writes it per-frame.
 var (
 	charMu   sync.Mutex
 	charList []d2rCharacter
 	charNext uint64 = 1
 )
+
+func charStorePath() string {
+	return env("BATTLENET_CHARACTER_STORE", "/var/lib/battlenet/characters.json")
+}
+
+type charStore struct {
+	Next       uint64         `json:"next_id"`
+	Characters []d2rCharacter `json:"characters"`
+}
+
+// loadCharacters restores the roster at startup. A missing file is the normal
+// first run, not an error.
+func loadCharacters() {
+	path := charStorePath()
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("CHARACTERS: reading %s: %v", path, err)
+		}
+		return
+	}
+	var st charStore
+	if err := json.Unmarshal(blob, &st); err != nil {
+		log.Printf("CHARACTERS: parsing %s: %v", path, err)
+		return
+	}
+
+	charMu.Lock()
+	defer charMu.Unlock()
+	charList = st.Characters
+	charNext = st.Next
+	if charNext == 0 {
+		charNext = 1
+	}
+	log.Printf("CHARACTERS: restored %d from %s", len(charList), path)
+}
+
+// saveCharactersLocked writes the roster. Call with charMu held. Writes to a
+// temporary file and renames, so a crash mid-write cannot leave a half-written
+// roster in place of a good one.
+func saveCharactersLocked() {
+	path := charStorePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Printf("CHARACTERS: creating %s: %v", filepath.Dir(path), err)
+		return
+	}
+	blob, err := json.Marshal(charStore{Next: charNext, Characters: charList})
+	if err != nil {
+		log.Printf("CHARACTERS: encoding roster: %v", err)
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+		log.Printf("CHARACTERS: writing %s: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("CHARACTERS: renaming onto %s: %v", path, err)
+	}
+}
 
 // parseCreateCharacter reads the request the client actually sends.
 func parseCreateCharacter(body []byte) d2rCharacter {
@@ -138,6 +207,7 @@ func handleCharacterRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		charNext++
 		charList = append(charList, c)
 		count := len(charList)
+		saveCharactersLocked()
 		charMu.Unlock()
 		log.Printf("D2RSVC %s: CreateCharacter %q class=%d flags=%d id=%d (%d on the roster)",
 			s.remote, c.Name, c.Class, c.Flags, c.ID, count)
