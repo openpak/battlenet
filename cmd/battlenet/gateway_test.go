@@ -153,6 +153,73 @@ func TestLoggedOnRouting(t *testing.T) {
 	}
 }
 
+func TestD2RAuthSessionAndPushes(t *testing.T) {
+	// AuthSessionResponse body: fields 1-8 at empty defaults, 9 = session
+	// id string, 10 = 0 (the two fields the session-started event reads).
+	body := authSessionResponseBody("abc123")
+	if !bytes.Equal(body, append(pbBytes(9, []byte("abc123")), pbVarint(10, 0)...)) {
+		t.Fatalf("AuthSessionResponse body: %x", body)
+	}
+
+	if got := d2rMethodName(d2rServicesHash, d2rAuthSession); got != "D2rServicesConnection.AuthSession" {
+		t.Fatalf("name %q", got)
+	}
+	if got := d2rMethodName(gameVersionHash, gameSetGameVersion); got != "GameVersion.SetGameVersion" {
+		t.Fatalf("name %q", got)
+	}
+
+	// End to end: an AuthSession request yields a status-0 response plus the
+	// three server pushes, all with parseable headers and exact body sizes.
+	s := newGatewaySession("test")
+	reqHeader := pbVarint(1, uint64(d2rServicesHash))
+	reqHeader = append(reqHeader, pbVarint(2, uint64(d2rAuthSession))...)
+	reqHeader = append(reqHeader, pbVarint(3, 7)...)
+	reqBody := pbBytes(1, []byte("openpak:1"))
+	packet := make([]byte, 2)
+	binary.BigEndian.PutUint16(packet, uint16(len(reqHeader)))
+	packet = append(packet, reqHeader...)
+	packet = append(packet, reqBody...)
+	if !handleD2RServices(s, packet) {
+		t.Fatal("handleD2RServices returned false")
+	}
+	frames := [][]byte{}
+	for i := 0; i < 4; i++ {
+		select {
+		case f := <-s.out:
+			frames = append(frames, f)
+		default:
+			t.Fatalf("frame %d missing (got %d)", i, len(frames))
+		}
+	}
+	// First frame: the response echoing service+method+token with is_response.
+	h, ok := parseD2RHeader(frames[0])
+	if !ok || h.service != d2rServicesHash || h.method != d2rAuthSession || h.token != 7 {
+		t.Fatalf("response header %+v ok=%v", h, ok)
+	}
+	if !bytes.Contains(frames[0], pbVarint(9, 1)) {
+		t.Fatalf("response missing is_response: %x", frames[0])
+	}
+	if !bytes.Contains(h.body, pbVarint(10, 0)) {
+		t.Fatalf("response body missing field 10: %x", h.body)
+	}
+	// Pushes: SessionUpdate, CookieUpdate, ServerPing, server-initiated.
+	for i, want := range []struct {
+		service, method uint32
+	}{
+		{d2rServicesHash, d2rSessionUpdate},
+		{d2rServicesHash, d2rCookieUpdate},
+		{d2rServicesHash, d2rServerPing},
+	} {
+		ph, ok := parseD2RHeader(frames[i+1])
+		if !ok || ph.service != want.service || ph.method != want.method {
+			t.Fatalf("push %d header %+v ok=%v", i, ph, ok)
+		}
+		if bytes.Contains(frames[i+1], pbVarint(9, 1)) {
+			t.Fatalf("push %d must not set is_response: %x", i, frames[i+1])
+		}
+	}
+}
+
 func TestD2RServicesResponse(t *testing.T) {
 	// A request header as the client writes it (1–6, 9, 12), echoed back as
 	// the recipe decoded from the title: 1, 2, 3 echoed, 5 = 0, 9 = 1.
