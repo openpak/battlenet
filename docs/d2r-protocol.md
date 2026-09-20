@@ -311,6 +311,38 @@ Verified: `HTTP/1.1 101 Web Socket Protocol Handshake` on plain
 `http://PROD_HOST:1119/OSI/v2/rpc/client`, and TLS on 1119 still
 terminates for the bgs logon.
 
+## First live D2R-services session (2026-09-20 17:22 UTC)
+
+With `ws://`, the connection the project had never reached came up and stayed
+up. Gateway log, in order:
+
+    D2rServicesConnection.AuthSession        answered (36-byte body)
+    pushed SessionUpdate, CookieUpdate, ServerPing
+    GameVersion.SetGameVersion               answered
+    unknown 0x44432e9b / 0x7d47c51f          answered (empty)
+    D2rServicesConnection.SessionUpdate      client answered our push
+    D2rServicesConnection.ServerPing         client answered our push
+    unknown 0xeeb6ab22 / 0xa2f2c246          answered (empty)
+    GameManagement.GameGetSitePingList       answered EMPTY  <- needs a real body
+    Character.ReadCharacterList              answered EMPTY  <- needs a real body
+    D2rServicesConnection.CookieUpdate       answered
+    ... then a 3 s heartbeat on 0x0b62a8a1 / 0x4b1c3b85, indefinitely
+
+No error 666, no DestroySession, no reconnect: the session holds. The frontier
+moved from "the connection never opens" to "the connection is open and every
+response body is empty".
+
+Next decodes, in the order the client asks for them:
+
+1. `ReadCharacterListResponse` (Character 0x607fd196 / 0x47821811) — the
+   character list; the request body starts `08 0...`.
+2. `GameGetSitePingListResponse` (GameManagement 0x110f2741 / 0xbb6dcaa4).
+3. The three unnamed hashes. 0x44432e9b has a service init at text 0x1749454
+   and 0x7d47c51f is referenced at 0x1687eb8 / 0x168ed24 / 0x17496c4;
+   0x0b62a8a1 and 0x4b1c3b85 are not built as MOVZ/MOVK immediates, so they
+   come from .rodata — chase them through the register tables, not a constant
+   scan.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
