@@ -88,9 +88,14 @@ func parseCreateCharacter(body []byte) d2rCharacter {
 // through the UTF-8-checked string helper 0x105be5c (obj+0x48). Only field 3
 // is certainly text, so the name goes there; field 1 carries the class, which
 // is the one varint the client itself sent us.
+// Field 2 is NOT text. Sent the name there once and the select screen drew
+// "Hansolo LEVEL 0 80 Warriv's All Right" -- the title parsed those bytes as
+// character progress and rendered an act/quest string out of them. Left empty
+// until its real shape is known; the name lives in field 3, which is the
+// UTF-8-checked one and renders correctly.
 func characterSummary(c d2rCharacter) []byte {
 	out := pbVarint(1, c.Class)
-	out = append(out, pbBytes(2, []byte(c.Name))...)
+	out = append(out, pbBytes(2, nil)...)
 	return append(out, pbBytes(3, []byte(c.Name))...)
 }
 
