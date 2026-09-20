@@ -428,6 +428,16 @@ known offset (rather than from the noisy parser block).
 | GameCreateResponse | 0x16f02c4 | 1 (both), 2 (both), 3 LEN, 4 LEN, 5 varint, 6 LEN, 7 LEN |
 | GameAttribute | 0x16ecba4 | 1 LEN, 2 LEN |
 
+### GameJoin field-1 probe (2026-09-20 20:47 UTC)
+
+On a freshly restarted client, GameJoin was answered with the one-field body
+`0a 0a "JoinProbe1"`: field 1 was the exact display name requested by that
+same GameJoin. The client accepted it and began polling that same name three
+seconds later, so the response parsed. It made no visible change: GameDetail
+continued at three-second intervals for 58 seconds before the ordinary game
+creation timeout closed both connections. Field 1 alone is therefore not the
+ready/host payload.
+
 Still unattributed: which field carries the host's address. The title is
 peer-hosted, so something in GameDetailResponse (or GameJoinResponse) must
 name the GameMaster — most likely one of the LEN fields holding
