@@ -268,6 +268,49 @@ Gateway-side nothing is wrong on this path: LogonResult, CreateSession,
 ProcessTask (149 bytes) and GetAccountState (109 bytes) are all answered and
 accepted.
 
+## Why the D2R-services TLS never completed (2026-09-20 night)
+
+The title puts every other connection through **`nn::ssl`** — geo, telemetry,
+account and the bgs gateway all log `ssl::CreateContext` + `SetHostName`, and
+OpenPak injects its CA there (`[OpenPak] Supplying the configured CA through
+system certificate 1033`), so they all verify.
+
+The D2R-services websocket does **not**: there is no `ssl::CreateContext` for
+`us.actual:1119` in any run. bgs-sdk carries **its own OpenSSL** with its own
+embedded CA list (`BEGIN CERTIFICATE` ×15 in .rodata, full X509 verify
+machinery, `ERROR_NETWORK_MODULE_OPENSSL_X509_*` strings) and does that
+handshake in-guest. A certificate signed by `O=OpenPak, CN=OpenPak Network CA`
+cannot validate against it, and there is no way to add to that bundle without
+patching the title.
+
+Observed exactly, with the Bsd packet tap kept alive past the first frame:
+
+    48.263  BsdTap TX PROD_HOST:1119 (293 bytes)  16030101200100011C0303…  ClientHello
+    48.303  BsdTap RX PROD_HOST:1119 (1550 bytes) 160303007A02000076…      ServerHello+Cert+SKE+Done
+    48.303→ select r=[0e,7] e=[7] -> ready=0, parked every 100 ms, forever
+
+The client consumes the server's complete flight, never sends
+ClientKeyExchange, and never sends an alert — it simply stops. Connect then
+times out at +15 s with error 666.
+
+**The fix is ours to make, because we hand the client the URL.** LoginResponse
+field 1 selects the scheme, and the URL builder (0x162785c) treats `ws:` as
+plain and anything else as TLS. Serving the D2R-services connection over
+`ws://` removes the certificate from the path entirely:
+
+- `BATTLENET_D2R_SERVICES_URL=ws://us.actual.battle.net:1119`
+- Traefik gains `battlenet-gateway-plain`, a TCP router on the same `gateway`
+  entrypoint with `HostSNI(*)` and **no** `tls` block, so it matches only
+  non-TLS connections and cannot shadow the SNI router. Both point at the same
+  plaintext backend `openpak-battlenet:21501` — the one Traefik already
+  forwards to after terminating TLS.
+- Port 1119 is reused deliberately: it is the only port already open in the
+  host firewall (21081 is not), so no new exposure.
+
+Verified: `HTTP/1.1 101 Web Socket Protocol Handshake` on plain
+`http://PROD_HOST:1119/OSI/v2/rpc/client`, and TLS on 1119 still
+terminates for the bgs logon.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
