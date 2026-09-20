@@ -193,6 +193,11 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 			body = b
 		}
 	}
+	if h.service == gameManagementHash {
+		if b, ok := handleGameRPC(s, h); ok {
+			body = b
+		}
+	}
 	s.send(d2rResponse(h, body))
 	log.Printf("D2RSVC %s: answered %s token %d (%d-byte body)", s.remote, name, h.token, len(body))
 	return true
