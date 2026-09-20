@@ -433,6 +433,40 @@ name the GameMaster — most likely one of the LEN fields holding
 of these in by guessing; the client polls GameDetail every 3 s and a wrong
 answer is indistinguishable from no answer on screen.
 
+## GameCreateRequest / GameJoinRequest, pinned by known inputs (2026-09-20)
+
+A custom game was created with every option chosen deliberately — name
+"<user-a>'s game", password "abc123", max 3 players, level difference 8,
+Normal difficulty — so these field meanings are read off matching values, not
+inferred from wire types.
+
+GameCreate (0x110f2741 / 0x930fbb99):
+
+| field | wire | value sent | meaning |
+|---|---|---|---|
+| 2 | string | `"<user-a>'s game"` | game name, **lowercased** by the client |
+| 3 | string | `"abc123"` | **password** |
+| 6 | string | `""` | unknown, empty in both captures |
+| 9 | varint | `8` | **level difference** (an auto private game sent 255 = unrestricted) |
+| 10 | varint | `3` | **max players** (an auto private game sent 4) |
+| 11 | varint | `4325376` | flags/bitfield, same value in both captures |
+| 12, 13 | string | `""` | unknown |
+| 14 | varint | `0` | **difficulty**, Normal = 0 |
+| 15 | varint | `1` | unknown, 1 in both |
+
+GameJoin (0xa5cc1951) reuses the same names: `{1 character id, 2 game name,
+3 password, 4 string "", 5-7 varint 0, 8 varint 1, 9 varint 0}` — field 3 is
+the password in both messages, which is what makes the mapping safe.
+
+Note on the earlier auto-generated private game: its field 3 was
+`"Game1628292938"`, the display-cased game name, where the custom game put the
+password. So for a quick private game the client fills the password with the
+game name rather than leaving it empty. Field 2 is the lowercased form in both.
+
+This is enough to implement a real lobby: a game record can now be built from
+what the client actually asks for — name, password, capacity, level spread and
+difficulty — instead of echoing a string back.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
