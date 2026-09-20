@@ -188,6 +188,11 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 		pushSessionState(s, sessionID)
 		return true
 	}
+	if h.service == characterHash {
+		if b, ok := handleCharacterRPC(s, h); ok {
+			body = b
+		}
+	}
 	s.send(d2rResponse(h, body))
 	log.Printf("D2RSVC %s: answered %s token %d (%d-byte body)", s.remote, name, h.token, len(body))
 	return true
