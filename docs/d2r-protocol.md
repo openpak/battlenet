@@ -343,6 +343,33 @@ Next decodes, in the order the client asks for them:
    come from .rodata — chase them through the register tables, not a constant
    scan.
 
+## Character select and game creation, from live traffic (2026-09-20 19:1x UTC)
+
+With the roster answered, the title walks all the way to game creation. Every
+layout below is read off bytes the client actually sent, not inferred.
+
+| RPC | service/method | request bytes | layout |
+|---|---|---|---|
+| Character.ConvertCharacter | 0x607fd196 / 0xb0a7dad2 | `08 01` | {1 varint character id} |
+| GameManagement.GameCreate | 0x110f2741 / 0x930fbb99 | `12 0e "game1628292938" 1a 0e "Game1628292938" 32 00 48 ff01 50 04 58 80…` | {2 string key (lowercased name), 3 string display name, 6 string password (empty), 9 varint 255, 10 varint 4, 11 varint} |
+| GameManagement.GameJoin | 0x110f2741 / 0xa5cc1951 | `08 01 12 0e "game…" 1a 0e "Game…" 22 00 28 00 30 00 38 00 40 …` | {1 varint character id, 2 string key, 3 string display name, 4 string password, 5-8 varint} |
+| GameManagement.GameDetail | 0x110f2741 / 0xb5cd1354 | `0a 0e "Game1628292938"` | {1 string display name} |
+
+`ConvertCharacter` also confirms the hash the static pass left open:
+**0xb0a7dad2**, and its field 1 is the character id we handed out in
+`CreateCharacterResponse`.
+
+Sequence on "create private game": GameCreate once, GameJoin once, then
+**GameDetail every 3 s forever**. All three are answered with an empty body
+today, so the client sits on "creating game" waiting for a game that never
+becomes ready. `UseCharacter` (0x6a706ac6) is never called — the title goes
+from the roster straight to game creation.
+
+The frontier is no longer the RPC layer. GameDetail has to describe a game
+that exists, and a game the client can actually enter means a D2 game server
+speaking the in-game protocol — a far bigger piece than any response body
+decoded so far. Nothing in this repo serves it yet.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
