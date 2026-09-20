@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
@@ -68,6 +69,15 @@ type gameDetailTune struct {
 	Field7  uint64  `json:"field7"`
 	Field8  uint64  `json:"field8"`
 	Players int     `json:"players"` // how many empty GameDetailPlayer entries in field 9
+
+	// GameCreateResponse and GameJoinResponse bodies, as raw hex. They are
+	// one-shot replies -- the client gets each exactly once and only then
+	// starts polling GameDetail -- so they are the likelier gate, and they
+	// cannot be probed by repetition the way GameDetail can. Hex rather than
+	// named fields because their layouts are not settled: GameJoinResponse's
+	// fields 1-4 still show two wire types each in the class block.
+	CreateHex string `json:"create_hex"`
+	JoinHex   string `json:"join_hex"`
 }
 
 func loadGameDetailTune() gameDetailTune {
@@ -131,10 +141,22 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			s.remote, name, len(body), t.Field2, t.Field5, t.Field3, t.Field4, t.Field6, t.Field7, t.Field8, t.Players)
 		return body, true
 	case gameCreate, gameJoin:
-		// Left empty on purpose: the client already walks past both to
-		// GameDetail, so changing them at the same time would blur which
-		// response moved the client.
-		return nil, false
+		t := loadGameDetailTune()
+		raw := t.CreateHex
+		what := "GameCreate"
+		if h.method == gameJoin {
+			raw, what = t.JoinHex, "GameJoin"
+		}
+		if raw == "" {
+			return nil, false
+		}
+		body, err := hex.DecodeString(raw)
+		if err != nil {
+			log.Printf("D2RSVC %s: %s hex is not decodable: %v", s.remote, what, err)
+			return nil, false
+		}
+		log.Printf("D2RSVC %s: %s -> tuned body %d bytes (%s)", s.remote, what, len(body), raw)
+		return body, true
 	}
 	return nil, false
 }
