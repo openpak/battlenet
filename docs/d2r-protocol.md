@@ -438,6 +438,12 @@ continued at three-second intervals for 58 seconds before the ordinary game
 creation timeout closed both connections. Field 1 alone is therefore not the
 ready/host payload.
 
+A subsequent headless Ghidra callback trace reached only the generated
+GetTypeName wrappers, not the consuming callback: that route is indirect
+through the client's RPC/vtable machinery. It adds no field attribution and
+is not grounds to send a guessed varint. The local trace artifact is
+`~/d2r-work/gamejoin-callback-trace.txt`.
+
 Still unattributed: which field carries the host's address. The title is
 peer-hosted, so something in GameDetailResponse (or GameJoinResponse) must
 name the GameMaster — most likely one of the LEN fields holding
