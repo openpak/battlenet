@@ -415,13 +415,15 @@ Recovered the same way as the character messages: find the type-name string,
 find its `GetTypeName` xref, bound the class block by the next one, and read
 the tag compares out of the parser. Blocks that still show one field number
 with two wire types contain more than one function, so those rows are the
-less certain ones and are marked.
+less certain ones and are marked. `GameJoinResponse` was later disambiguated
+from its merge routine, which copies each presence-bit-selected member to its
+known offset (rather than from the noisy parser block).
 
 | Message | GetTypeName xref | Fields |
 |---|---|---|
 | GameDetailResponse | 0x16f9798 | 1 LEN, 2 LEN, 3 varint, 4 varint, 5 LEN, 6 varint, 7 varint, 8 varint, 9 LEN — no duplicates, high confidence |
 | GameDetailPlayer | 0x16f7748 | 1 LEN, 2 varint, 3 varint (a 3 LEN also appears in the block) |
-| GameJoinResponse | 0x16f2bfc | 1-4 ambiguous (varint and LEN both present), 5 LEN, 6-9 varint, 10 LEN |
+| GameJoinResponse | 0x16f2bfc | **1 LEN, 2 varint, 3 varint, 4 varint, 5 LEN, 6 varint, 7 varint, 8 varint, 9 varint, 10 LEN** — high confidence; merge at 0x16f2824 maps presence bits 0–9 to fields 1–10 |
 | GameListInfo | 0x16f5184 | 1 varint, 2 varint, 3 (both), 4 varint, 5 (both), 6 LEN, 7 LEN |
 | GameCreateResponse | 0x16f02c4 | 1 (both), 2 (both), 3 LEN, 4 LEN, 5 varint, 6 LEN, 7 LEN |
 | GameAttribute | 0x16ecba4 | 1 LEN, 2 LEN |
