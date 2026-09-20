@@ -370,6 +370,45 @@ that exists, and a game the client can actually enter means a D2 game server
 speaking the in-game protocol — a far bigger piece than any response body
 decoded so far. Nothing in this repo serves it yet.
 
+## The game itself is peer-hosted, not server-hosted (2026-09-20)
+
+This decides how much of a D2R server there is to write, so it is worth being
+precise. The title carries, in .rodata:
+
+- `Bind.Success|port=6112` and `Checking binding UDP to port 6112...` — the
+  client BINDS the classic Diablo II game port. It listens; it does not only
+  dial. `nn::socket::Listen` is an import.
+- `Client.GameMaster.NatPunch.Enabled`, `NatPunch.Commencing`,
+  `NatPunch.Failure`, `Checking Nat Punch Type 1...` — the host is called the
+  GameMaster and peers NAT-punch to it.
+- `classic.protocol.local.v1.upnp.UPNPService` / `UPNPAttribute` — the host
+  opens its own port via UPnP.
+- STUN ("Sending STUN packet...", `Upnp.ExternalIp|address=%s`) — the host
+  discovers its external address to publish.
+- `classic.protocol.v1.game_proxy.*` — `NewClientRequest`, `DelClientRequest`,
+  `DisconnectClientRequest`, `AddressInfo`, `Packet`, `UDPPacket`,
+  `NatPacket`, `EchoPacket`: a relay for peers that cannot punch through.
+- `ERROR_MATCHMAKING_GAMESERVER_NOT_FOUND` / `_FULL` /
+  `_ALREADY_REGISTERED`, `[INTERNAL] Not ready to connect to a game server.`
+
+So a game runs **on the hosting console**. The world simulation, which would
+have been the enormous piece, is not ours to write. What a complete D2R server
+owes the title is:
+
+1. bgs logon and session — done.
+2. D2R-services auth and the character roster — done.
+3. Game management: GameCreate / GameJoin / GameDetail / GameList answered
+   with real bodies, carrying the host's `AddressInfo` so peers can reach it.
+4. `game_proxy` as a relay when NAT punch fails. On a LAN or a single console
+   this may never be exercised, but a public deployment needs it.
+5. Character persistence — done (roster on disk).
+
+That makes "100% working" a tractable target rather than a rewrite of Diablo
+II. The next decodes are `GameCreateResponse`, `GameJoinResponse` and
+`GameDetailResponse` (type names at ro 0x1d29fd, 0x1887aa, 0x1a8148), plus
+`GameDetailPlayer` (0x18c029) and `GameListInfo` (0x1e0c85) — specifically
+which field carries the host address.
+
 ## Open
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
