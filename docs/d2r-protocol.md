@@ -45,6 +45,16 @@ the NSO does carry RELA relocations, so vtables resolve exactly).
   the service by header field 11 and the method by field 2.
 - ContentHandle (GetContentHandle's response) has required fields; an empty
   body does not parse.
+- AccountService.GetAccountState (method 30, service 0x62da0891) must be
+  answered with a populated GetAccountStateResponse {1: AccountState, 2:
+  AccountFieldTags} (layouts from the embedded `account_service.proto` /
+  `account_types.proto` descriptors): AccountState {1: AccountLevelInfo
+  {5: country, 6: preferred_region, 8: battle_tag}, 5: GameLevelInfo
+  {8: name, 9: fixed32 program}, 7: GameAccountList {3: region, 4:
+  GameAccountHandle {1: fixed32 id, 2: fixed32 program, 3: region}}}, tags
+  marking each section present. An empty body parses but the D2R layer logs
+  "Failed to retrieve account level session due to reason 4" and never
+  starts the game-server stage.
 - DestroySession's only sender is the Login state's stop (0x2073fc →
   0x1ca838). It fired 15 s after every logon because the Login state timed
   out (see below), carrying an empty id because our OnSessionCreated push
