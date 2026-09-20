@@ -212,6 +212,24 @@ will settle them.
 
 - First live capture of the D2R-services WebSocket (blocked on the dial
   gate below).
+- 2026-09-20 pcap verdict: the game-network path is clean — the D2R dial's
+  TCP handshake completes, Traefik's 1551-byte TLS ServerHello flight is
+  fully delivered and ACKed (one segment reordered; SACK + retransmit fixed
+  it in microseconds), and then the client never sends its handshake half
+  (60 s idle, server FIN). The stall is the game never driving the socket:
+  created non-blocking, never polled, never written, across every run —
+  while eu.actual in the same process goes poll → writable → TLS normally.
+  Not a socket, emulator-networking, MTU or certificate problem.
+- Login never succeeds, so Connect never starts, so nothing pumps the
+  socket. Login update 0x207490 (decompiled) needs poll 0x202830()==4 plus
+  its session-pointer combination (struct base 0x24E5000: +0x4E2418 /
+  +0x4E2448 — Ghidra folds these to absolute `DAT_029c7c18/48`, same
+  addresses). The ProcessTask callback consumes our response cleanly (none
+  of its four failure strings ever log; URL/token stored at session
+  +0xf8/+0x128, flag +0x158 set) yet DestroySession fires at +15 s every
+  run. Next: enumerate every writer to Login's poll word and pointer slots
+  and find which input only a server push can provide (dial-gate inputs
+  +0x100/+0x130/+0xf0 live in the same neighborhood).
 - Online still fails after the LoginResponse, size and client_id fixes
   (client_id confirmed live 2026-09-19: the id now rides on ProcessTask and
   DestroySession, which still fires at +15 s): the
