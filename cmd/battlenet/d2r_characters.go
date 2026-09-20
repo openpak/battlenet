@@ -32,6 +32,7 @@ type d2rCharacter struct {
 	Class uint64
 	Flags uint64
 	ID    uint64
+	Level uint64
 }
 
 // One roster for the whole box, mirrored to disk. It began as process memory
@@ -157,15 +158,27 @@ func parseCreateCharacter(body []byte) d2rCharacter {
 // through the UTF-8-checked string helper 0x105be5c (obj+0x48). Only field 3
 // is certainly text, so the name goes there; field 1 carries the class, which
 // is the one varint the client itself sent us.
-// Field 2 is NOT text. Sent the name there once and the select screen drew
-// "Hansolo LEVEL 0 80 Warriv's All Right" -- the title parsed those bytes as
-// character progress and rendered an act/quest string out of them. Left empty
-// until its real shape is known; the name lives in field 3, which is the
-// UTF-8-checked one and renders correctly.
+// Field assignment settled by two live renders, not by the helper the parser
+// uses:
+//
+//	field 2 = "Hansolo", field 3 = "Hansolo"  -> the name appeared
+//	field 2 = empty,     field 3 = "Hansolo"  -> the name was GONE
+//
+// So the NAME is field 2, the bytes field at +0x40, even though field 3 at
+// +0x48 is the one the parser runs through the UTF-8-checked helper. The long
+// "LEVEL 0 ..." line on the select screen is not field 2 either: it survived
+// field 2 going empty, so it is what the panel draws for a character with no
+// progress data.
+//
+// Field 3 is left empty: nothing observable has been attributed to it, and an
+// empty field is honest where a guessed value would manufacture evidence.
+// Field 1 carries the level here; the previous run sent the class (4) and the
+// screen still read LEVEL 0, so this run distinguishes "field 1 is the level"
+// from "the level comes from somewhere else" in one deploy.
 func characterSummary(c d2rCharacter) []byte {
-	out := pbVarint(1, c.Class)
-	out = append(out, pbBytes(2, nil)...)
-	return append(out, pbBytes(3, []byte(c.Name))...)
+	out := pbVarint(1, c.Level)
+	out = append(out, pbBytes(2, []byte(c.Name))...)
+	return append(out, pbBytes(3, nil)...)
 }
 
 // readCharacterListBody encodes the roster.
@@ -204,6 +217,7 @@ func handleCharacterRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		c := parseCreateCharacter(h.body)
 		charMu.Lock()
 		c.ID = charNext
+		c.Level = 1 // a fresh character; the title never tells us a level
 		charNext++
 		charList = append(charList, c)
 		count := len(charList)

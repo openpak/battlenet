@@ -25,6 +25,7 @@ func TestCreateCharacterRoundTrip(t *testing.T) {
 	}
 
 	got.ID = 7
+	got.Level = 1
 	charMu.Lock()
 	charList = append(charList, got)
 	charMu.Unlock()
@@ -66,7 +67,7 @@ func TestRosterSurvivesRestart(t *testing.T) {
 
 	charMu.Lock()
 	defer charMu.Unlock()
-	if len(charList) != 1 || charList[0].Name != "Hansolo" || charList[0].Class != 4 {
+	if len(charList) != 1 || charList[0].Name != "Hansolo" || charList[0].Class != 4 || charList[0].Level != 1 {
 		t.Fatalf("roster after restart: %+v", charList)
 	}
 	if charNext != 2 {
