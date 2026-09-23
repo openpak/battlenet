@@ -48,7 +48,8 @@ const (
 )
 
 type identityClient struct {
-	links accountv1.LinksClient
+	links    accountv1.LinksClient
+	accounts accountv1.IdentityClient
 	conn  *grpc.ClientConn
 	addr  string
 	key   string
@@ -84,7 +85,8 @@ func newIdentityClient(ctx context.Context, addr, internalKey string) (*identity
 		log.Printf("identity warmup: core answered %v (continuing; check_token will retry)", warmErr)
 	}
 
-	return &identityClient{links: accountv1.NewLinksClient(conn), conn: conn, addr: addr, key: internalKey}, nil
+	return &identityClient{links: accountv1.NewLinksClient(conn), accounts: accountv1.NewIdentityClient(conn),
+		conn: conn, addr: addr, key: internalKey}, nil
 }
 
 // reconnect drops the pooled connection and dials fresh. The account core's
@@ -106,6 +108,7 @@ func (c *identityClient) reconnect(ctx context.Context) error {
 
 	c.conn = conn
 	c.links = accountv1.NewLinksClient(conn)
+	c.accounts = accountv1.NewIdentityClient(conn)
 
 	log.Printf("identity client reconnected to %s", c.addr)
 
@@ -135,6 +138,28 @@ func (c *identityClient) resolve(ctx context.Context, idToken string) (string, e
 func (c *identityClient) Close() { _ = c.conn.Close() }
 
 var errUnauthenticated = errors.New("unauthenticated")
+
+// errBanned is an account the admin banned, or one being deleted
+// (website/docs/ban-lookup.md). Checked at every login, straight from the core:
+// no session is issued for it.
+var errBanned = fmt.Errorf("%w: account banned", errUnauthenticated)
+
+// accountAllowed asks the core whether the account may sign in. Only ACTIVE may;
+// an unknown account is locked out too, and a core that cannot answer refuses the
+// login (the caller retries once on a fresh connection when it is Unavailable).
+func accountAllowed(ctx context.Context, accounts accountv1.IdentityClient, accountID string) error {
+	acct, err := accounts.GetAccount(ctx, &accountv1.GetAccountRequest{AccountId: accountID})
+	if status.Code(err) == codes.NotFound {
+		return errBanned
+	}
+	if err != nil {
+		return fmt.Errorf("account status lookup: %w", err)
+	}
+	if acct.GetStatus() != accountv1.AccountStatus_ACCOUNT_STATUS_ACTIVE {
+		return errBanned
+	}
+	return nil
+}
 
 // switchSubjectFromToken parses the id_token payload and returns the switch
 // link subject it carries: the BAAS "sub", which is what the core's switch
@@ -373,6 +398,9 @@ func (c *identityClient) resolveOnce(ctx context.Context, idToken string) (strin
 	}
 	if link.GetState() != accountv1.LinkState_LINK_STATE_ACTIVE {
 		return "", fmt.Errorf("%w: switch link is %s", errUnauthenticated, link.GetState())
+	}
+	if err := accountAllowed(ctx, c.accounts, link.GetAccountId()); err != nil {
+		return "", err
 	}
 
 	return c.battleNetSubject(ctx, link.GetAccountId())
