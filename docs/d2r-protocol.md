@@ -370,6 +370,86 @@ that exists, and a game the client can actually enter means a D2 game server
 speaking the in-game protocol — a far bigger piece than any response body
 decoded so far. Nothing in this repo serves it yet.
 
+### Character creation and roster metadata consumer (2026-09-21)
+
+The character path is now traced beyond the protobuf parsers and into the
+runtime character builder. The wire layouts actually consumed are:
+
+| Message | Fields actually consumed |
+|---|---|
+| CreateCharacterRequest | 1 name string, 2 class uint32, 3 flags uint32 |
+| CreateCharacterResponse | **1 character ID uint64 only**; the generated parser ignores an extra field 2 |
+| ReadCharacterListResponse | 1 uint32, 2 repeated CharacterSummary |
+| CharacterSummary | **1 character ID uint64, 2 name bytes, 3 character-data UTF-8 string** |
+
+The current server has two material encoding errors: it puts `Level` in
+CharacterSummary field 1, although that field becomes the character ID, and
+it leaves field 3 empty. The first character masked the ID error because both
+its ID and level happened to be 1. Multiple fresh characters would all be
+advertised with ID 1. The empty field 3 explains the malformed class, level,
+progress text and appearance.
+
+The complete client flow is:
+
+1. NetworkState type 5 reads name at creation-object `+0x48`, class at
+   `+0x160`, and flags at `+0x164`, then sends CreateCharacter. Its success
+   callback stores response field 1 at result `+0x28` and completes.
+2. `OnReadCharacterListSuccess` at `0x1ce27c` copies each CharacterSummary
+   into an intermediate record without interpreting it: ID, name, and the
+   field-3 data string are all preserved.
+3. The type-4 list callback at `0x1cbb50` clones those values into a
+   `0x540`-byte roster record: ID at `+0`, name at `+0x8`, and data string at
+   `+0x120`.
+4. The runtime builder at `0x6a5f08` receives those three values. If the data
+   string is shorter than 51 bytes, it treats it as the legacy binary D2
+   statstring and reads fixed offsets through byte 30. An empty string
+   therefore selects the wrong decoder and yields meaningless defaults.
+5. At 51 bytes or longer, field 3 is parsed as JSON. Recognized keys are
+   `version`, `appearance`, `class`, `level`, `charflags`, `acts`, `guildTag`,
+   `equipment`, and `questRecords`. The basic visible values map directly:
+   JSON `class` -> runtime byte `+0x120`, `level` -> `+0x121`, `charflags` ->
+   uint16 `+0x122`, and `appearance` -> the byte array beginning at `+0x110`.
+
+A minimal fresh-character metadata body such as
+`{"version":0,"appearance":[],"class":4,"level":1,"charflags":0}` is long
+enough to select the JSON path and supplies the fields currently rendered
+incorrectly. An empty `appearance` is filled with the client's `0xff`
+defaults, after which the class-specific appearance builder runs. This needs
+a live render check before adding optional act/equipment/progression data.
+
+### Character usability and progression fields (2026-09-22)
+
+The select UI's usability predicate is `FUN_006a8e70` at `0x6a8e70`. It
+returns a six-bit mask and enables the character only when the mask is
+`0x3f`. The bits cover, in order: level range, progression/difficulty,
+ladder match, expansion match, hardcore match, and the online-character
+record kind. The progression test compares `charflags >> 8 & 0x1f` against
+`4 * difficulty` for classic characters or `5 * difficulty` for expansion
+characters. Thus the high five bits of `charflags` are progression, not a
+separate flag family.
+
+The badge interpretation is also now exact. The widget is named
+`ClassicIcon` and is visible only when `(charflags & 0x20) == 0`. An
+expansion character therefore has no classic badge; absence of that icon is
+evidence that the expansion bit reached runtime `+0x122`, not evidence that
+it was lost.
+
+`acts` is an array of integer bytes. The JSON builder stores each element's
+low seven bits in the per-act array at runtime `+0xdd8`; bit 7 marks that
+element as the current act and stores its index at `+0xddb`. For a new
+character, omitting `acts`, sending `[]`, or sending `[128]` all leave the
+effective act/progress state at act zero. Consequently the earlier `acts:[]`
+hot probe could not have changed usability.
+
+The live server now has a no-restart diagnostic override in
+`/var/lib/battlenet/character.json`:
+`{"charflags":7968,"acts":[128]}`. `7968 == 0x1f20` preserves expansion,
+softcore and non-ladder while maxing the five-bit progression value. If the
+same roster becomes selectable after a fresh `ReadCharacterList`, the failed
+mask bit is progression; if it does not, capture the exact warning/highlight
+state and gateway log for one select attempt rather than changing more JSON
+keys.
+
 ## The game itself is peer-hosted, not server-hosted (2026-09-20)
 
 This decides how much of a D2R server there is to write, so it is worth being
@@ -396,7 +476,8 @@ have been the enormous piece, is not ours to write. What a complete D2R server
 owes the title is:
 
 1. bgs logon and session — done.
-2. D2R-services auth and the character roster — done.
+2. D2R-services auth and character persistence — transport works; the roster
+   summary still needs the corrected ID and character-data encoding below.
 3. Game management: GameCreate / GameJoin / GameDetail / GameList answered
    with real bodies, carrying the host's `AddressInfo` so peers can reach it.
 4. `game_proxy` as a relay when NAT punch fails. On a LAN or a single console
@@ -404,10 +485,10 @@ owes the title is:
 5. Character persistence — done (roster on disk).
 
 That makes "100% working" a tractable target rather than a rewrite of Diablo
-II. The next decodes are `GameCreateResponse`, `GameJoinResponse` and
-`GameDetailResponse` (type names at ro 0x1d29fd, 0x1887aa, 0x1a8148), plus
-`GameDetailPlayer` (0x18c029) and `GameListInfo` (0x1e0c85) — specifically
-which field carries the host address.
+II. The response consumers are now decoded: GameJoin field 1 carries the host,
+field 2 the port, and field 4 the active game number/identifier; GameCreate
+cannot supply a retained join pair. Remaining work is a live transport probe,
+the optional player/list structures, and the corrected character-data body.
 
 ## game_management response layouts (static, 2026-09-20)
 
@@ -425,7 +506,7 @@ known offset (rather than from the noisy parser block).
 | GameDetailPlayer | 0x16f7748 | 1 LEN, 2 varint, 3 varint (a 3 LEN also appears in the block) |
 | GameJoinResponse | 0x16f2bfc | **1 bytes, 2 uint32 (consumer narrows to uint16), 3 uint32, 4 uint32, 5 bytes, 6 bool, 7 uint32, 8 uint32, 9 optional uint32, 10 bytes** — high confidence; merge at 0x16f2824 maps presence bits 0–9 to fields 1–10, and the RPC adapter at 0x1649cc0 proves the concrete storage/consumer types |
 | GameListInfo | 0x16f5184 | 1 varint, 2 varint, 3 (both), 4 varint, 5 (both), 6 LEN, 7 LEN |
-| GameCreateResponse | 0x16f02c4 | 1 (both), 2 (both), 3 LEN, 4 LEN, 5 varint, 6 LEN, 7 LEN |
+| GameCreateResponse | 0x16f02c4 | parser block is noisy, but the RPC adapter consumes **only field 5 as uint32** and discards every other response field |
 | GameAttribute | 0x16ecba4 | 1 LEN, 2 LEN |
 
 ### GameJoin field-1 probe (2026-09-20 20:47 UTC)
@@ -450,15 +531,106 @@ from parser xrefs. `OnGameJoinSuccess` is at `0x1bb5e4`, and the RPC adapter at
 one important type detail: field 6 is a boolean, field 2 is narrowed to 16
 bits, and field 9 preserves an explicit presence bit. The three LEN fields
 use the bytes parser rather than the UTF-8-validating string parser. The
-adapter forwards the fields but does not reveal their names. A minimal live
-probe of field 6 = true (`30 01`) is therefore the next bounded experiment.
+adapter forwards the fields but does not reveal their names.
 
-Still unattributed: which field carries the host's address. The title is
-peer-hosted, so something in GameDetailResponse (or GameJoinResponse) must
-name the GameMaster — most likely one of the LEN fields holding
-`classic.protocol.v1.game_proxy.AddressInfo` or a host string. Do not fill any
-of these in by guessing; the client polls GameDetail every 3 s and a wrong
-answer is indistinguishable from no answer on screen.
+### GameJoin field-6 probe (2026-09-21)
+
+A fresh client was answered with field 6 = true only (`30 01`). Unlike the
+ordinary empty/field-1 attempts, it did not time out after the first minute.
+It remained on the same game for more than two minutes and kept requesting
+GameDetail, with the cadence changing from about three seconds to about five
+seconds after the first minute. Field 6 is therefore strongly identified as
+the **pending/queued** flag. True intentionally selects the wait path; false
+or absent selects the non-queued path but still needs whatever connection or
+token data that path consumes.
+
+### GameJoin non-queued consumer (2026-09-21)
+
+The non-queued path is now traced past the RPC adapter. The UI's type-9
+`JoiningGame` request is only an orchestration state: `0x1d7b98` activates and
+waits for NetworkState category 2. The category-2 state has vtable
+`0x1e2cd18`; its entry method at `0x1b7e94` submits GameJoin through the
+GameManagement method at `0x164735c`. Its per-request callback has vtable
+`0x1e2cd58`, whose success slot is `0x1b985c`.
+
+That callback proves the following non-queued data flow:
+
+| GameJoin field | Category-2 result | Downstream use |
+|---|---:|---|
+| 1 bytes | `+0x68` | first argument to the `GameConnectionObject` connect call; endpoint/host string |
+| 2 uint32 -> uint16 | `+0x98` | second connect argument; endpoint port |
+| 3 uint32 | `+0x9c` | third connect argument; stored at GameMaster `+0xe0`, with no reader found in that class |
+| 4 uint32 | `+0xa0` | fourth connect argument; active game number/identifier, stored at `+0xe4`, read by four handshake/error sites, and printed on join failure |
+| 5 bytes | transient connection configuration | copied into the session configuration built by `0x1b985c` |
+| 6 bool | `+0xd0` | passed to `GameConnectionObject` as its final stack argument; true is also the observed queued/pending path |
+| 7 uint32 | transient flags | decoded as bit flags while building the session configuration |
+| 8 uint32 | transient value | combined with optional field 9 for range arithmetic |
+| 9 optional uint32 | transient optional value | when present, used with field 8 to form a bounded range |
+| 10 bytes | `+0xa8` | retained by the category-2 state, but not passed in the immediate connect call |
+
+When the category-2 state reaches result state 2/substate 1, `0x1b8b04`
+invokes the global object whose own failure logs are tagged
+`GameConnectionObject`. The call loads field 1 as `x1`, field 2 as `w2`, field
+3 as `w3`, field 4 as `w4`, and field 6 as the stack argument. This is the
+first direct proof of the response's endpoint tuple: **field 1 is the host and
+field 2 is the port**. Fields 3 and 4 are passed as adjacent uint32 transport
+arguments; they are not readiness flags. The concrete GameMaster connection
+routine at `0x1635958` stores field 3 at object `+0xe0` and field 4 at `+0xe4`.
+An exhaustive access scan of that concrete class found no reader of `+0xe0`,
+while `+0xe4` is read at four handshake/error-dispatch sites (`0x1636cec`,
+`0x16378b0`, `0x16386bc`, `0x163ae20`). Thus field 4 is the active game
+number/identifier on this Switch build; field 3 is accepted and retained but
+is inert in the traced path. This does not establish that servers may omit
+field 3, only that it cannot be the missing active handshake identifier here.
+
+### GameCreate success consumer (2026-09-21)
+
+GameCreate cannot mint the GameJoin field-3/field-4 pair. The RPC adapter at
+`0x1649b7c` reads only `GameCreateResponse` field 5 and forwards that one
+uint32 to `OnGameCreateSuccess` at `0x1baec4`; every other response member is
+discarded. The type-8 `CreatingGame` request installs a type-erased callback
+whose invocation thunk is `0x1d7534`. The callback receives the field-5 value
+but ignores all three success arguments and only removes the outstanding
+request by the request ID at object `+0x30`. No GameCreate response value is
+retained in the CreatingGame result. Any equality between GameCreate field 5
+and GameJoin field 4 would therefore be a server-side convention, not a value
+the client carries from the create response into its transport object.
+
+### GameDetail result consumer (2026-09-21)
+
+The GameDetail path is no longer inferred from parser layout. Its concrete
+flow is:
+
+1. `OnGameDetailSuccess` at `0x1bed84` builds the RPC success event.
+2. `0x1d9460` copies it into the type-11 NetworkState result. It consumes
+   fields 1, 2, 3, 4, 6, 7, 8 and the repeated field 9. It does not call the
+   field-5 getter at all.
+3. The GameFinder request site writes type 11 at `0x9fb938` and registers it
+   at `0x9fbcec`. Callback `0x9ffb4c` copies the completed result into the
+   browser model consumed by `0x9fa528`.
+4. The only numeric detail fields loaded by that browser consumer are field 4
+   and fields 6/7. Field 4 is formatted as elapsed time. At
+   `0x9fc668`/`0x9fc710`, fields 6/7 produce the displayed level range:
+   `lower=max(1, field6-field7)`, `upper=min(99, field6+field7)`; field 7 at
+   least 99 displays `LevelRestrictionAny`.
+
+Fields 6 and 7 are narrowed to bytes in the result model, but are level and
+level-difference values, not boolean ready flags. Fields 3 and 8 are copied
+but never loaded in this path; field 5 is discarded before it reaches the UI.
+There is no ready/queue-release branch on any GameDetail field in this
+consumer. The repeated GameDetail traffic seen after GameJoin field 6 = true
+is details-panel refresh, not a readiness poll that can release the queue.
+
+NSO relocation trap: text RELA addends are raw text offsets and require the
+module's `+0x100` text VA bias. Applying addends as code VAs directly resolves
+the wrong functions while still looking superficially plausible.
+
+The next bounded live probe should therefore use a textual reachable address
+in GameJoin field 1 and its UDP game port in field 2, with field 6 absent or
+false and an explicit field-4 game number. Keep field 3 at a fixed conservative
+value because it is accepted and stored, but do not treat it as the missing
+active half of a pair. GameDetail field 5 is explicitly ignored by the traced
+browser path and is no longer a host-address candidate.
 
 ## GameCreateRequest / GameJoinRequest, pinned by known inputs (2026-09-20)
 

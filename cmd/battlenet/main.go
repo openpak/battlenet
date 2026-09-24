@@ -290,8 +290,54 @@ func main() {
 	log.Printf("battlenet web tier on %s (geo, telemetry-in, account)", addr)
 
 	go gatewaySink(env("BATTLENET_GATEWAY_ADDR", ":21501"))
+	go gameProbeSink(env("BATTLENET_GAME_PROBE_ADDR", ":21502"))
 
 	log.Fatal(server.ListenAndServe())
+}
+
+// gameProbeSink captures the transport the title opens after GameJoin. The
+// public Traefik listener terminates TLS for us.actual.battle.net and forwards
+// the clear stream here. Keeping this separate from gatewaySink matters: the
+// game connection is not an HTTP WebSocket upgrade, and treating it as one
+// hid the first client packet until the upgrade reader timed out.
+//
+// This is deliberately an observation endpoint, not a pretend game server.
+// It logs exactly what the title sends and writes nothing until the game
+// transport's framing and handshake have been established from evidence.
+func gameProbeSink(addr string) {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("game probe sink on %s: %v", addr, err)
+		return
+	}
+	log.Printf("game probe sink on %s", addr)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("GAMEPROBE accept: %v", err)
+			continue
+		}
+		go captureGameProbe(conn)
+	}
+}
+
+func captureGameProbe(conn net.Conn) {
+	defer conn.Close()
+	remote := conn.RemoteAddr().String()
+	log.Printf("GAMEPROBE connect from %s", remote)
+	buf := make([]byte, 4096)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+		n, err := conn.Read(buf)
+		if n > 0 {
+			log.Printf("GAMEPROBE %s RX %d bytes: %x", remote, n, buf[:n])
+		}
+		if err != nil {
+			log.Printf("GAMEPROBE %s closed: %v", remote, err)
+			return
+		}
+	}
 }
 
 // identities is the account-core client the check_token exchange resolves

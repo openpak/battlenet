@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -25,14 +26,17 @@ const (
 )
 
 // A character as the title sends it: CreateCharacterRequest is
-// {1 string name, 2 varint class, 3 varint flags} — read off the wire, the
-// live client sent 0a07 "Hansolo" 10 04 18 00.
+// {1 string name, 2 varint class, 3 varint flags, 4 varint kind} — read off
+// the wire. A classic create sent 0a07 "Hansolo" 10 04 18 00 (no field 4);
+// an expansion create sent 0a07 "Hansolo" 10 04 18 00 20 02 (field 4 = 2).
+// Field 4's name is unsettled; its value is preserved verbatim.
 type d2rCharacter struct {
-	Name  string
-	Class uint64
-	Flags uint64
-	ID    uint64
-	Level uint64
+	Name   string
+	Class  uint64
+	Flags  uint64
+	Field4 uint64
+	ID     uint64
+	Level  uint64
 }
 
 // One roster for the whole box, mirrored to disk. It began as process memory
@@ -150,6 +154,13 @@ func parseCreateCharacter(body []byte) d2rCharacter {
 			}
 			c.Flags = v
 			body = body[m:]
+		case num == 4 && typ == protowire.VarintType:
+			v, m := protowire.ConsumeVarint(body)
+			if m < 0 {
+				return c
+			}
+			c.Field4 = v
+			body = body[m:]
 		default:
 			m := protowire.ConsumeFieldValue(num, typ, body)
 			if m < 0 {
@@ -165,30 +176,133 @@ func parseCreateCharacter(body []byte) d2rCharacter {
 // Layout from the LITE parser at text 0x16c0ea0, cross-checked against the
 // serializer at 0x16c11f4: field 1 varint (obj+0x38), field 2 length-delimited
 // through the bytes helper 0x105bd4c (obj+0x40), field 3 length-delimited
-// through the UTF-8-checked string helper 0x105be5c (obj+0x48). Only field 3
-// is certainly text, so the name goes there; field 1 carries the class, which
-// is the one varint the client itself sent us.
-// Field assignment settled by two live renders, not by the helper the parser
-// uses:
+// through the UTF-8-checked string helper 0x105be5c (obj+0x48).
+// Field assignment was first narrowed by two live renders:
 //
 //	field 2 = "Hansolo", field 3 = "Hansolo"  -> the name appeared
 //	field 2 = empty,     field 3 = "Hansolo"  -> the name was GONE
 //
-// So the NAME is field 2, the bytes field at +0x40, even though field 3 at
-// +0x48 is the one the parser runs through the UTF-8-checked helper. The long
-// "LEVEL 0 ..." line on the select screen is not field 2 either: it survived
-// field 2 going empty, so it is what the panel draws for a character with no
-// progress data.
-//
-// Field 3 is left empty: nothing observable has been attributed to it, and an
-// empty field is honest where a guessed value would manufacture evidence.
-// Field 1 carries the level here; the previous run sent the class (4) and the
-// screen still read LEVEL 0, so this run distinguishes "field 1 is the level"
-// from "the level comes from somewhere else" in one deploy.
+// The 2026-09-21 consumer trace settled all three fields: field 1 is the
+// character ID, field 2 is the name, and field 3 is the character-data string.
+// The runtime builder treats field 3 shorter than 51 bytes as a legacy binary
+// statstring and otherwise parses JSON containing class, level, flags,
+// appearance and progression.
 func characterSummary(c d2rCharacter) []byte {
-	out := pbVarint(1, c.Level)
+	out := pbVarint(1, c.ID)
 	out = append(out, pbBytes(2, []byte(c.Name))...)
-	return append(out, pbBytes(3, nil)...)
+	return append(out, pbBytes(3, characterData(c))...)
+}
+
+// characterData emits the fixed-offset statstring used by the working online
+// character-select path. A live A/B test established that the JSON decoder
+// renders metadata but changes the online quick action to New Character and
+// loses the Classic/Expansion presentation; the populated legacy decoder
+// renders the model and metadata while preserving Play and the badges.
+// Research-only formats remain hot-switchable without a server restart.
+func characterData(c d2rCharacter) []byte {
+	extra := characterJSONExtra()
+	if raw, ok := extra["_format"]; ok {
+		var format string
+		if json.Unmarshal(raw, &format) == nil {
+			switch format {
+			case "legacy-empty":
+				return nil
+			case "json":
+				delete(extra, "_format")
+				return characterJSONData(c, extra)
+			}
+		}
+	}
+	return characterLegacyData(c)
+}
+
+// characterJSONData retains the alternate >=51-byte decoder as a diagnostic
+// surface. It is not the production encoding; select it explicitly with
+// {"_format":"json"} in the tune file.
+func characterJSONData(c d2rCharacter, extra map[string]json.RawMessage) []byte {
+	flags := c.Flags
+	if c.Field4 == 2 {
+		flags |= 0x20
+	}
+	doc, err := json.Marshal(struct {
+		Version    uint64   `json:"version"`
+		Appearance []uint64 `json:"appearance"`
+		Class      uint64   `json:"class"`
+		Level      uint64   `json:"level"`
+		CharFlags  uint64   `json:"charflags"`
+	}{
+		Version:    0,
+		Appearance: []uint64{},
+		Class:      c.Class,
+		Level:      c.Level,
+		CharFlags:  flags,
+	})
+	if err != nil {
+		return []byte("{}")
+	}
+	if len(extra) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(doc, &m); err != nil {
+			return doc
+		}
+		for k, v := range extra {
+			var val any
+			if err := json.Unmarshal(v, &val); err != nil {
+				continue
+			}
+			m[k] = val
+		}
+		if merged, err := json.Marshal(m); err == nil {
+			return merged
+		}
+	}
+	return doc
+}
+
+// characterLegacyData builds the fixed-offset character statstring consumed
+// when field 3 is shorter than 51 bytes. The offsets come directly from the
+// client's legacy branch: appearance 2..12, class+1 at 13, level at 25,
+// 7-bit-split charflags at 26/27, and current act at 30. Zero appearance
+// components describe an unequipped character while remaining valid UTF-8.
+func characterLegacyData(c d2rCharacter) []byte {
+	data := make([]byte, 31)
+	data[13] = byte(c.Class + 1)
+	data[25] = byte(c.Level)
+	flags := c.Flags
+	if c.Field4 == 2 {
+		flags |= 0x20
+	}
+	data[26] = byte(flags & 0x7f)
+	data[27] = byte((flags >> 7) & 0x7f)
+	return data
+}
+
+// characterJSONExtra returns optional research overrides for field 3. The
+// reserved _format key selects "legacy-empty" or "json"; absent, unknown and
+// "legacy" values all keep the production legacy statstring.
+//
+// This is a probe surface for the playable-marking keys (acts, equipment,
+// questRecords and friends are recognized by the client but their shapes are
+// not settled, so they are not baked into the code). The file is re-read on
+// every ReadCharacterList, which the title re-requests each time the player
+// backs out and re-enters the character screen — so each edit takes effect
+// with no restart and no dropped session. Fold the settled keys into
+// characterData and drop this knob when the remaining probes conclude.
+func characterJSONExtra() map[string]json.RawMessage {
+	path := env("BATTLENET_CHARACTER_JSON_TUNE", "/var/lib/battlenet/character.json")
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	if len(strings.TrimSpace(string(blob))) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &m); err != nil {
+		log.Printf("CHARACTERS: ignoring invalid %s: %v", path, err)
+		return nil
+	}
+	return m
 }
 
 // readCharacterListBody encodes the roster.
@@ -211,12 +325,36 @@ func readCharacterListBody() []byte {
 	return out
 }
 
-// createCharacterBody encodes CreateCharacterResponse: parser 0x16be9c8,
-// field 1 a 64-bit varint (obj+0x38) and field 2 a 32-bit varint (obj+0x40).
-// Field 1 is answered with the new character's id and field 2 with 0, the
-// value every other status field on this connection uses for success.
+// createCharacterBody encodes CreateCharacterResponse. The success adapter
+// forwards only field 1, the new character's uint64 ID.
 func createCharacterBody(c d2rCharacter) []byte {
-	return append(pbVarint(1, c.ID), pbVarint(2, 0)...)
+	return pbVarint(1, c.ID)
+}
+
+// parseDeleteCharacter reads DeleteCharacterRequest. The live client sent
+// 08 01 10 00 for character 1: field 1 is the character ID (field 2 carries
+// a zero value the server ignores).
+func parseDeleteCharacter(body []byte) uint64 {
+	for len(body) > 0 {
+		num, typ, n := protowire.ConsumeTag(body)
+		if n < 0 {
+			break
+		}
+		body = body[n:]
+		if num == 1 && typ == protowire.VarintType {
+			v, m := protowire.ConsumeVarint(body)
+			if m < 0 {
+				return 0
+			}
+			return v
+		}
+		m := protowire.ConsumeFieldValue(num, typ, body)
+		if m < 0 {
+			return 0
+		}
+		body = body[m:]
+	}
+	return 0
 }
 
 // handleCharacterRPC answers the Character service. Returns false when the
@@ -233,8 +371,8 @@ func handleCharacterRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		count := len(charList)
 		saveCharactersLocked()
 		charMu.Unlock()
-		log.Printf("D2RSVC %s: CreateCharacter %q class=%d flags=%d id=%d (%d on the roster)",
-			s.remote, c.Name, c.Class, c.Flags, c.ID, count)
+		log.Printf("D2RSVC %s: CreateCharacter %q class=%d flags=%d field4=%d id=%d (%d on the roster)",
+			s.remote, c.Name, c.Class, c.Flags, c.Field4, c.ID, count)
 		return createCharacterBody(c), true
 	case charReadList:
 		body := readCharacterListBody()
@@ -243,6 +381,27 @@ func handleCharacterRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		charMu.Unlock()
 		log.Printf("D2RSVC %s: ReadCharacterList -> %d character(s), %d-byte body", s.remote, count, len(body))
 		return body, true
+	case charDelete:
+		id := parseDeleteCharacter(h.body)
+		charMu.Lock()
+		kept := charList[:0]
+		removed := false
+		for _, c := range charList {
+			if c.ID == id {
+				removed = true
+				continue
+			}
+			kept = append(kept, c)
+		}
+		charList = kept
+		if removed {
+			saveCharactersLocked()
+		}
+		count := len(charList)
+		charMu.Unlock()
+		log.Printf("D2RSVC %s: DeleteCharacter id=%d removed=%v (%d on the roster)",
+			s.remote, id, removed, count)
+		return []byte{}, true
 	}
 	return nil, false
 }
