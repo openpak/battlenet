@@ -1,0 +1,46 @@
+name: release
+
+# Only a pushed v*.*.* tag (or a manual dispatch) builds: pushing to main builds nothing.
+# Tag a release (v1.2.3) and this publishes ghcr.io/openpak/battlenet:1.2.3, :1.2 and :latest for
+# amd64 and arm64. Deployed hosts run podman-auto-update against :latest, so pushing a tag is
+# the deploy.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+# One release build at a time.
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    # The OpenPak self-hosted runner with podman: private repositories get no GitHub-hosted
+    # minutes. arm64 goes through the host's QEMU binfmt handlers.
+    runs-on: [self-hosted, linux, podman]
+    steps:
+      - uses: actions/checkout@v4
+      # REGISTRY_AUTH_FILE is set per STEP, not on the job: the `runner` context
+      # is not available in a job-level `env:`, and a job that references it
+      # fails as a "workflow file issue" -- no jobs, no logs, 0s, which is
+      # exactly how this repository's releases have been failing.
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth.json # job-scoped login; never the runner user's own
+      - env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/auth.json
+        run: |
+          set -e
+          IMG="ghcr.io/${{ github.repository }}"
+          case "${GITHUB_REF_NAME}" in v*) VER="${GITHUB_REF_NAME#v}";; *) VER="";; esac
+          podman manifest rm "$IMG:build" 2>/dev/null || true
+          podman build --platform linux/amd64,linux/arm64 --manifest "$IMG:build" .
+          TAGS="latest"; [ -n "$VER" ] && TAGS="$TAGS $VER $(echo "$VER" | cut -d. -f1,2)"
+          for t in $TAGS; do podman manifest push --all "$IMG:build" "docker://$IMG:$t"; done
+          podman manifest rm "$IMG:build"
+          echo "pushed $IMG: $TAGS"
