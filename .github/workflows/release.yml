@@ -25,6 +25,12 @@ jobs:
     runs-on: [self-hosted, linux, podman]
     steps:
       - uses: actions/checkout@v4
+      - name: Scratch in the workspace, not the runner's shared /tmp
+        # /tmp is a RAM disk every build on the machine shares; when it filled on
+        # 2026-09-24 a compiler died and a job hung for hours instead of failing.
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/.tmp" >> "$GITHUB_ENV"
       # REGISTRY_AUTH_FILE is set per STEP, not on the job: the `runner` context
       # is not available in a job-level `env:`, and a job that references it
       # fails as a "workflow file issue" -- no jobs, no logs, 0s, which is
@@ -44,3 +50,6 @@ jobs:
           for t in $TAGS; do podman manifest push --all "$IMG:build" "docker://$IMG:$t"; done
           podman manifest rm "$IMG:build"
           echo "pushed $IMG: $TAGS"
+      - name: Clear scratch
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/.tmp"
