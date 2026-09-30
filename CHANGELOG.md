@@ -5,6 +5,14 @@ of truth; this file is the readable summary.
 
 ## Unreleased
 
+- **Game-server transport.** After GameJoin the title dials field 1 on TCP 443 with its own
+  OpenSSL and expects the Diablo II game server to speak first; the peer-hosted model was wrong.
+  GameJoin now answers `1 = d2gs.battle.net` (`BATTLENET_GAME_HOST`), `3`/`4` = the game id, no
+  field 2 or 6. A listener on `:21503` (`BATTLENET_GAME_ADDR`, behind Traefik's `d2gs.battle.net`
+  TLS router) speaks the handshake (`AF 00`, logon, flags, `00`, `02`, pongs) and logs every packet
+  after it; the in-game stream is the next piece. The title trusts our certificate only through
+  the IPS32 patch in `tools/d2r-trust`. The `:21502` probe sink is gone.
+
 ## v0.1.0 — 2026-09-24
 
 First tagged release: `ghcr.io/openpak/battlenet` for amd64 and arm64. Carries the

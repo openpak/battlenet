@@ -228,11 +228,16 @@ func gameMasterPort() uint32 {
 // BATTLENET_GAMEMASTER_HOST override when set (for NAT/container deployments
 // where the observed session IP is not directly dialable), otherwise the
 // creating session's IP with the TCP source port stripped.
+// defaultGameHost is the name the title dials on TCP 443 after GameJoin; the
+// certificate Traefik serves for it must chain to the CA in the trust patch.
+const defaultGameHost = "d2gs.battle.net"
+
 func gameMasterEndpoint(remote string) (string, uint32) {
 	if host := strings.TrimSpace(os.Getenv("BATTLENET_GAMEMASTER_HOST")); host != "" {
 		return host, gameMasterPort()
 	}
-	return gameMasterHost(remote), gameMasterPort()
+	_ = gameMasterHost(remote) // the creator's address is logged, never dialled
+	return env("BATTLENET_GAME_HOST", defaultGameHost), gameMasterPort()
 }
 
 // allocateGameIDLocked hands out a nonzero uint32 game ID. Call with gameMu held.
@@ -313,9 +318,13 @@ func gameCreateBody(gameID uint32) []byte {
 // but with no reader on this build; never present it as an active token) and
 // field 6 is omitted so the client takes the immediate-connection path
 // rather than the queued/pending path.
-func gameJoinBody(host string, port uint32, gameID uint32) []byte {
+func gameJoinBody(host string, gameID uint32) []byte {
+	// 1 = the host the title dials on TCP 443 (its TLS hostname check runs on
+	// it); 3 = game hash, 4 = token: both echoed in the client's logon packet,
+	// 4 must be non-zero. Field 2 is never read by the title; field 6 (queued)
+	// must stay absent.
 	out := pbBytes(1, []byte(host))
-	out = append(out, pbVarint(2, uint64(port))...)
+	out = append(out, pbVarint(3, uint64(gameID))...)
 	return append(out, pbVarint(4, uint64(gameID))...)
 }
 
@@ -494,7 +503,7 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			log.Printf("D2RSVC %s: GameJoin %q -> password mismatch", s.remote, req.Key)
 			return nil, false
 		}
-		body := gameJoinBody(rec.Host, rec.Port, rec.ID)
+		body := gameJoinBody(rec.Host, rec.ID)
 		log.Printf("D2RSVC %s: GameJoin %q -> host=%s port=%d id=%d (%d-byte body)",
 			s.remote, req.Key, rec.Host, rec.Port, rec.ID, len(body))
 		return body, true

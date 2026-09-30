@@ -56,8 +56,8 @@ func TestGameIDAllocationAndLookup(t *testing.T) {
 	if rec.ID == 0 {
 		t.Fatal("allocated game ID must be nonzero")
 	}
-	if rec.Host != "10.90.90.92" || rec.Port != 6112 {
-		t.Fatalf("endpoint = %s:%d", rec.Host, rec.Port)
+	if rec.Host != defaultGameHost {
+		t.Fatalf("host = %s, want the game-server name the title dials on 443", rec.Host)
 	}
 	got, ok := lookupGame("mygame")
 	if !ok || got.ID != rec.ID {
@@ -136,22 +136,16 @@ func TestGameMasterEndpointOverride(t *testing.T) {
 }
 
 func TestGameJoinResponseFields(t *testing.T) {
-	body := gameJoinBody("10.90.90.92", 6112, 99)
+	body := gameJoinBody("d2gs.battle.net", 99)
 	varints, datas := decodeTestFields(t, body)
-	if string(datas[1]) != "10.90.90.92" {
+	if string(datas[1]) != "d2gs.battle.net" {
 		t.Fatalf("join field 1 = %q, want host", datas[1])
 	}
-	if varints[2] != 6112 {
-		t.Fatalf("join field 2 = %d, want 6112", varints[2])
+	if varints[3] != 99 || varints[4] != 99 {
+		t.Fatalf("join fields 3/4 = %d/%d, want the game id in both", varints[3], varints[4])
 	}
-	if varints[4] != 99 {
-		t.Fatalf("join field 4 = %d, want 99", varints[4])
-	}
-	if v, ok := varints[6]; ok && v != 0 {
-		t.Fatalf("join field 6 must be absent or false for immediate connection, got %d", v)
-	}
-	if _, ok := varints[3]; ok {
-		t.Fatalf("join field 3 should be omitted, not presented as a token")
+	if _, ok := varints[6]; ok {
+		t.Fatalf("join field 6 selects the queued path and must be absent")
 	}
 }
 
@@ -172,11 +166,11 @@ func TestDynamicCreateJoinFlow(t *testing.T) {
 		t.Fatal("dynamic GameJoin must answer with correct password and normalized name")
 	}
 	varints, datas := decodeTestFields(t, joinBody)
-	if string(datas[1]) != "10.90.90.92" {
-		t.Fatalf("join host = %q, want creator IP without TCP port", datas[1])
+	if string(datas[1]) != defaultGameHost {
+		t.Fatalf("join host = %q, want the game-server name", datas[1])
 	}
-	if varints[2] != 6112 {
-		t.Fatalf("join port = %d, want 6112", varints[2])
+	if varints[3] == 0 || varints[4] == 0 {
+		t.Fatalf("join fields 3/4 must carry the game id: %v", varints)
 	}
 	rec, _ := lookupGame("hansolo's game")
 	if varints[4] != uint64(rec.ID) {
@@ -229,7 +223,7 @@ func TestConcurrentCreateJoin(t *testing.T) {
 			if _, ok := lookupGame(key); !ok {
 				t.Errorf("lookup %q failed", key)
 			}
-			_ = gameJoinBody(rec.Host, rec.Port, rec.ID)
+			_ = gameJoinBody(rec.Host, rec.ID)
 			_, _ = handleGameRPC(&gatewaySession{remote: "10.0.0.6:5000"}, d2rHeader{
 				service: gameManagementHash, method: gameJoin, body: encodeGameJoin(key, ""),
 			})
