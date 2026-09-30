@@ -22,13 +22,16 @@ const (
 	gameCreateCan = uint32(0x38274117)
 )
 
-// Direct-LAN game management.
+// Game management (lobby records only).
 //
-// The title hosts games itself: the creating console is the GameMaster,
-// binds UDP 6112, and peers connect to it directly (NAT punch, UPnP, STUN,
-// or plain LAN reachability). This server never simulates the world; it only
-// keeps a lobby record so a later GameJoin can be answered with the recorded
-// GameMaster endpoint and the allocated game number.
+// CORRECTION 2026-09-30 (docs/d2r-protocol.md, "CORRECTION 2026-09-30"): the
+// title does NOT host games. After GameJoin it dials field 1 on TCP 443 with
+// its own OpenSSL, trust pinned to a DigiCert bundle in the binary, and expects
+// a Diablo II game server there (server speaks first). Field 2 (port) and
+// field 6 are never read. This service keeps the lobby record and answers the
+// RPCs correctly up to that hand-off; the game server itself does not exist yet.
+// The "GameMaster / UDP 6112" wording below is the earlier, wrong model and is
+// kept only because the env knobs carry those names.
 //
 // Direct-LAN limitation of this patch: GameJoin returns the creating
 // session's observed IP (or BATTLENET_GAMEMASTER_HOST when that IP is not

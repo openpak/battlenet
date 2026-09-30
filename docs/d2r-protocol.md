@@ -208,6 +208,21 @@ GameUpdateRequired/GameUpdateCanceled push hashes, Stats/Network/IGR
 method hashes. None is on the solo create/join path; the Ghidra project
 will settle them.
 
+## Gateway TLS on hardware (static, 2026-09-30)
+
+The bgs gateway (`*.actual.battle.net:1119`, 443 as the retry port) is opened by the bgs-sdk
+SSL transport over `nn::ssl`, not a private OpenSSL: connect routine text 0x3856c, TLS block
+0x391d8, sequence `Context::Create(Auto)` -> `Connection::Create` -> `SetSocketDescriptor` ->
+`SetHostName` -> `SetIoMode(NonBlocking)` -> `SetSessionCacheMode(SessionTicket)` and nothing
+else -- no `SetVerifyOption`, no `SkipDefaultVerify`, no `ImportServerPki` (the emulator log for
+`eu.actual.battle.net` shows exactly that pair of calls, while geo/telemetry/account set all
+three). Verification is therefore nn::ssl's default (PeerCa|HostName) against the console's
+built-in store, where the NRO puts the OpenPak CA (slot 1033). The 32 KB pin JSON at ro
+0x253509 (gateways, `*.bgs.battle.net`, 141 root SPKI pins) is parsed at init but its
+`ImportServerPki` loop (0xfaaab4) runs zero times in a login and no server chain is ever fetched:
+the pins do not gate the gateway. `nn::nsd::Resolve` (0x38828) runs on the FQDN before the dial.
+Full trace: `private scratch`.
+
 ## The blocker is in the emulator, not the gateway (2026-09-20 night)
 
 The Login-never-succeeds model is **wrong**. The 2026-09-20 15:58 UTC run
@@ -449,6 +464,40 @@ same roster becomes selectable after a fresh `ReadCharacterList`, the failed
 mask bit is progression; if it does not, capture the exact warning/highlight
 state and gateway log for one select attempt rather than changing more JSON
 keys.
+
+## CORRECTION 2026-09-30: the game is server-hosted over TLS 443, and the trust is built in
+
+The "peer-hosted" section below is wrong; it was inferred from strings that belong to a network
+diagnostic (0x1685080), not to the join path. Traced end to end (full report with addresses:
+`private scratch`):
+
+- After GameJoin the category-2 update (0x1b8b04) calls `GameConnectionObject` slot 0x20 (0x6b2ed4)
+  -> the SDK game-server connection 0x1635958. It builds the endpoint `{host = field 1, port = 443}`:
+  **field 2 (port) and field 6 are never read**, the port is the constant 0x1bb. Field 3 becomes
+  bytes 1-4 of the client's first packet, field 4 (must be non-zero) bytes 5-6. Field 7 is display
+  flags, 8/9 the level range, 5 a display string, 10 unread. No self-host, loopback, STUN, UPnP,
+  NAT-punch or game_proxy branch exists on this path; the local connect (slot 0x28) is only reached
+  from the offline `.d2s` start (0x28f7d0).
+- The connection is TCP + TLS done by the game's own OpenSSL ("cross_ssl"), trusting only the PEM
+  bundle at ro 0x1b00033 (DigiCert High Assurance EV Root CA + DigiCert SHA2 High Assurance Server
+  CA, valid to 2028-10-22) and checking the hostname against field 1; the cert-failure callback
+  (0x163b750) returns 0. Neither nn::ssl nor the OpenPak system-store CA is consulted. DigiCert
+  stopped issuing under that root in 2023 (G2 hierarchy) and the root is distrusted from April
+  2026, so no public CA can issue a certificate the title will accept.
+- On that stream the SERVER speaks first: `AF 00`; client `68` logon (45 bytes: f3, f4, class,
+  constants, character id, name); server `01` game flags (bit 0x4 set, difficulty/expansion/ladder
+  bits self-consistent); server `00`; client `6D` ping; server `02`; then pongs `8F` and in-game
+  packets. "Creating game" ends only when a complete in-game packet arrives and they keep coming
+  every < 15 s: that is a Diablo II game server (world simulation), not a relay.
+- GameCreate: an empty body is enough, the client sets it to never time out. No server push is
+  needed; 0xa605d1e4 is client-sent `GameMatchmake`.
+
+What this means for OpenPak: a working "create game" needs (1) a certificate the title trusts,
+which cannot be bought and can only come from patching the title's bundle (hardware) or
+substituting it in the emulator, both against the no-game-patches rule; and (2) a Diablo II game
+server. Both are owner decisions, not server-side probes. The GameCreate/GameJoin/GameDetail
+answers in this service stay as they are: they are correct up to the point where the game server
+would take over.
 
 ## The game itself is peer-hosted, not server-hosted (2026-09-20)
 
