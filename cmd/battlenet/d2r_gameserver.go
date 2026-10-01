@@ -250,7 +250,74 @@ func joinBurst(class byte, name string, flags []byte) []byte {
 	binary.LittleEndian.PutUint32(local[2:6], playerID)
 	out = append(out, local...)
 	out = append(out, idle...)
+	out = append(out, startingStats(class)...)
+	out = append(out, idle...)
 	return append(append(out, 0x04), idle...)
+}
+
+// Classic stat ids. Life/mana/stamina and their maxima are fixed-point with 8
+// fraction bits on the wire.
+const (
+	statStrength   = 0
+	statEnergy     = 1
+	statDexterity  = 2
+	statVitality   = 3
+	statLife       = 6
+	statMaxLife    = 7
+	statMana       = 8
+	statMaxMana    = 9
+	statStamina    = 10
+	statMaxStamina = 11
+	statLevel      = 12
+)
+
+// startingStats is a level-1 character sheet. Update-build layouts: 1E = u16
+// stat, u16 value, u16 param (7 bytes); 1F = u16 stat, u16 param, u32 value
+// (9 bytes). Stats must follow 0B (local player set) or the client aborts.
+// ponytail: one fixed sheet per class table row; real values come with saves.
+func startingStats(class byte) []byte {
+	// str, dex, vit, energy, life, mana, stamina per class (Amazon, Sorceress,
+	// Necromancer, Paladin, Barbarian, Druid, Assassin), classic starting values.
+	table := [7][7]uint16{
+		{20, 25, 20, 15, 50, 15, 84},
+		{10, 25, 10, 35, 40, 35, 74},
+		{15, 25, 15, 25, 45, 25, 79},
+		{25, 20, 25, 15, 55, 15, 89},
+		{30, 20, 25, 10, 55, 10, 92},
+		{15, 20, 25, 20, 55, 20, 84},
+		{20, 20, 20, 25, 50, 25, 95},
+	}
+	row := table[4]
+	if int(class) < len(table) {
+		row = table[class]
+	}
+	u16 := func(stat, value uint16) []byte {
+		b := make([]byte, 7)
+		b[0] = 0x1E
+		binary.LittleEndian.PutUint16(b[1:3], stat)
+		binary.LittleEndian.PutUint16(b[3:5], value)
+		return b
+	}
+	u32 := func(stat uint16, value uint32) []byte {
+		b := make([]byte, 9)
+		b[0] = 0x1F
+		binary.LittleEndian.PutUint16(b[1:3], stat)
+		binary.LittleEndian.PutUint32(b[5:9], value)
+		return b
+	}
+	var out []byte
+	out = append(out, u16(statStrength, row[0])...)
+	out = append(out, u16(statDexterity, row[1])...)
+	out = append(out, u16(statVitality, row[2])...)
+	out = append(out, u16(statEnergy, row[3])...)
+	out = append(out, u16(statLevel, 1)...)
+	out = append(out, u32(statMaxLife, uint32(row[4])<<8)...)
+	out = append(out, u32(statLife, uint32(row[4])<<8)...)
+	out = append(out, u32(statMaxMana, uint32(row[5])<<8)...)
+	out = append(out, u32(statMana, uint32(row[5])<<8)...)
+	out = append(out, u32(statMaxStamina, uint32(row[6])<<8)...)
+	out = append(out, u32(statStamina, uint32(row[6])<<8)...)
+	return out
 }
 
 // pong answers a 13-byte 6D ping (or stands in for one, unrequested pongs are
