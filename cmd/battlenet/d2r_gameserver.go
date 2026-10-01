@@ -80,7 +80,6 @@ func serveGame(conn net.Conn) {
 	// Client packets are delimited by their first byte. The in-game heartbeat
 	// pings (6D) every 5 s and the update build drops the connection after one
 	// unanswered tick, so pongs go out immediately.
-	sizes := clientPacketSizes
 	r := bufio.NewReader(conn)
 	for {
 		id, err := r.ReadByte()
@@ -88,7 +87,16 @@ func serveGame(conn net.Conn) {
 			log.Printf("D2GS %s closed: %v", remote, err)
 			return
 		}
-		size, ok := sizes[id]
+		hdr := make([]byte, 0x19)
+		hdr[0] = id
+		total, need, ok := clientPacketLen(id, hdr)
+		if ok && need > 1 {
+			if _, err := io.ReadFull(r, hdr[1:need]); err != nil {
+				log.Printf("D2GS %s: short header %#x: %v", remote, id, err)
+				return
+			}
+			total, need, ok = clientPacketLen(id, hdr)
+		}
 		if !ok {
 			// Unknown id: log it with what follows and drop the buffered bytes
 			// rather than the connection; the stream resyncs at the next read.
@@ -97,9 +105,9 @@ func serveGame(conn net.Conn) {
 			r.Discard(len(rest))
 			continue
 		}
-		pkt := make([]byte, size)
-		pkt[0] = id
-		if _, err := io.ReadFull(r, pkt[1:]); err != nil {
+		pkt := make([]byte, total)
+		copy(pkt, hdr[:need])
+		if _, err := io.ReadFull(r, pkt[need:]); err != nil {
 			log.Printf("D2GS %s: short packet %#x: %v", remote, id, err)
 			return
 		}
@@ -114,7 +122,7 @@ func serveGame(conn net.Conn) {
 			// is answered, with pongs interleaved (the one before 04 matters).
 			if !burstSent {
 				burstSent = true
-				if _, err := conn.Write(joinBurst(join.class, join.name, flags)); err != nil {
+				if _, err := conn.Write(append(joinBurst(join.class, join.name, flags), assignNPCs()...)); err != nil {
 					return
 				}
 				log.Printf("D2GS %s: join burst sent for %q (class %d, edition %d, game %d, seed %#x, area %d)", remote, join.name, join.class, join.edition, join.gameID, townSeed, townArea)
@@ -125,27 +133,105 @@ func serveGame(conn net.Conn) {
 			log.Printf("D2GS %s: client reports loaded", remote)
 		case 0x69:
 			log.Printf("D2GS %s: client left the game", remote)
-		case 0x6F:
+		case 0x2F: // reached an NPC: open its dialog
+			npc := binary.LittleEndian.Uint32(pkt[1:5])
+			log.Printf("D2GS %s: talk to npc %d", remote, npc)
+			if _, err := conn.Write(npcDialog(npc)); err != nil {
+				return
+			}
+		case 0x30:
+			log.Printf("D2GS %s: closed dialog with npc %d", remote, binary.LittleEndian.Uint32(pkt[1:5]))
+		case 0x42, 0x6F, 0x01, 0x03:
 		default:
 			log.Printf("D2GS %s: client packet %#x %x", remote, id, pkt[1:])
 		}
 	}
 }
 
-// clientPacketSizes: lengths including the id byte. Classic ids from the public
-// D2GS table (private scratch), plus the
-// handshake ids and the console build's 0x42 position report (observed: id +
-// 6 bytes). Ids the update build changed are corrected as they are found.
+// clientPacketSizes: lengths including the id byte, for the UPDATE build
+// (private scratch, traced from the send sites).
+// Variable-length ids are in clientPacketLen.
 var clientPacketSizes = map[byte]int{
-	0x01: 5, 0x02: 9, 0x03: 5, 0x04: 9, 0x05: 5, 0x06: 9, 0x07: 9, 0x08: 5, 0x09: 9, 0x0A: 9,
-	0x0B: 1, 0x0C: 5, 0x0D: 9, 0x0E: 9, 0x0F: 5, 0x10: 9, 0x11: 9, 0x12: 1, 0x13: 9,
-	0x16: 13, 0x17: 5, 0x18: 17, 0x19: 5, 0x1A: 9, 0x1B: 9, 0x1C: 3, 0x1D: 9, 0x1E: 9, 0x1F: 17,
-	0x20: 13, 0x21: 9, 0x22: 5, 0x23: 9, 0x24: 5, 0x25: 9, 0x26: 13, 0x27: 9, 0x28: 9, 0x29: 9, 0x2A: 9,
-	0x2F: 9, 0x30: 9, 0x31: 9, 0x32: 17, 0x33: 17, 0x34: 5, 0x35: 17, 0x36: 9, 0x37: 5, 0x38: 13,
-	0x39: 5, 0x3A: 3, 0x3B: 3, 0x3C: 9, 0x3D: 5, 0x3E: 5, 0x3F: 3, 0x40: 1, 0x41: 1, 0x42: 7,
-	0x44: 17, 0x45: 9, 0x46: 13, 0x47: 13, 0x48: 1, 0x49: 9, 0x4B: 9, 0x4C: 5, 0x4D: 3, 0x4F: 7,
-	0x50: 9, 0x51: 9, 0x52: 5, 0x53: 1,
+	0x01: 210, 0x02: 214, 0x03: 210, 0x04: 214, 0x05: 5, 0x06: 9, 0x07: 9, 0x08: 210, 0x09: 214,
+	0x0A: 214, 0x0B: 5, 0x0C: 5, 0x0D: 9, 0x0E: 9, 0x0F: 210, 0x10: 214, 0x11: 214, 0x12: 9,
+	0x13: 9, 0x16: 17, 0x17: 5, 0x18: 17, 0x19: 17, 0x1A: 9, 0x1B: 13, 0x1C: 9, 0x1D: 13, 0x1E: 21,
+	0x21: 21, 0x24: 24, 0x25: 13, 0x26: 36, 0x27: 17, 0x28: 21, 0x29: 21, 0x2A: 21, 0x2D: 9,
+	0x2E: 21, 0x2F: 5, 0x30: 5, 0x31: 8, 0x32: 24, 0x33: 24, 0x34: 21, 0x35: 16, 0x36: 17,
+	0x37: 9, 0x38: 9, 0x39: 5, 0x3A: 5, 0x3B: 5, 0x3C: 9, 0x3D: 3, 0x3E: 1, 0x3F: 1, 0x40: 5,
+	0x41: 13, 0x42: 7, 0x43: 9, 0x44: 5, 0x47: 9, 0x49: 1, 0x4A: 1, 0x4B: 5, 0x4C: 3, 0x4D: 5,
+	0x4F: 6, 0x50: 30, 0x51: 17, 0x52: 13, 0x53: 21, 0x54: 21, 0x55: 29, 0x56: 21, 0x57: 29,
+	0x58: 21, 0x5A: 37, 0x5B: 25, 0x5C: 17, 0x5D: 98, 0x5E: 33, 0x5F: 25, 0x63: 25, 0x65: 13,
 	0x68: 45, 0x69: 1, 0x6B: 1, 0x6D: 13, 0x6F: 5,
+}
+
+// clientPacketLen returns the total length of a client packet given its id and
+// the bytes already read after it (headerNeeded bytes), for the ids whose
+// length depends on a count in the header. ok=false means unknown id.
+func clientPacketLen(id byte, hdr []byte) (total, headerNeeded int, ok bool) {
+	switch id {
+	case 0x20:
+		return 5*int(hdr[7]) + 13, 8, true
+	case 0x22:
+		return 7*int(hdr[9]) + 17, 10, true
+	case 0x2B, 0x2C:
+		return int(binary.LittleEndian.Uint16(hdr[1:3])) + 3, 3, true
+	case 0x4E:
+		return 5*int(hdr[6]) + 12, 7, true
+	case 0x60:
+		return 7*int(hdr[0x18]) + 32, 0x19, true
+	case 0x61:
+		return int(hdr[2]) + 3, 3, true
+	}
+	if n, ok := clientPacketSizes[id]; ok {
+		return n, 1, true
+	}
+	return 0, 0, false
+}
+
+// Act I townsfolk (monstats hcIdx from the public monster table: akara 148,
+// gheed 147, kashya 150, charsi 154, warriv 155), placed around the spawn
+// inside the revealed rooms. Unit ids follow the player's.
+// ponytail: positions are offsets from the spawn, not the level's preset
+// markers; good enough to talk to them, wrong for the map.
+type townNPC struct {
+	id     uint32
+	code   uint16
+	dx, dy int
+}
+
+var townNPCs = []townNPC{
+	{2, 148, 30, -20},  // Akara
+	{3, 150, -30, -20}, // Kashya
+	{4, 154, 30, 20},   // Charsi
+	{5, 147, -30, 20},  // Gheed
+	{6, 155, 0, 40},    // Warriv
+}
+
+// assignNPCs: AC per NPC, classic header only (totalLen 0x0d, no state stream).
+func assignNPCs() []byte {
+	var out []byte
+	for _, n := range townNPCs {
+		p := make([]byte, 13)
+		p[0] = 0xAC
+		binary.LittleEndian.PutUint32(p[1:5], n.id)
+		binary.LittleEndian.PutUint16(p[5:7], n.code)
+		binary.LittleEndian.PutUint16(p[7:9], uint16(spawnX+n.dx))
+		binary.LittleEndian.PutUint16(p[9:11], uint16(spawnY+n.dy))
+		p[11] = 100 // life %
+		p[12] = 0x0d
+		out = append(out, p...)
+	}
+	return out
+}
+
+// npcDialog opens the NPC dialog panel: 28 | 01 | u32 npcId | 00 | 96-byte
+// quest blob (all zero: no quests yet).
+func npcDialog(npcID uint32) []byte {
+	p := make([]byte, 103)
+	p[0] = 0x28
+	p[1] = 1
+	binary.LittleEndian.PutUint32(p[2:6], npcID)
+	return p
 }
 
 type pendingJoin struct {
