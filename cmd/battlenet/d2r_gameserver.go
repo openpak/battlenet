@@ -56,7 +56,11 @@ func serveGame(conn net.Conn) {
 	log.Printf("D2GS %s connected", remote)
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 
-	if _, err := conn.Write([]byte{0xAF, 0x00}); err != nil {
+	// The client's first ping is sent at game start, before this connection
+	// exists, so it never reaches us; at the next 5 s tick the client marks the
+	// heartbeat failed for good. An unrequested pong right after the opening is
+	// processed as soon as the socket is up and clears that flag in time.
+	if _, err := conn.Write(append([]byte{0xAF, 0x00}, pong(nil)...)); err != nil {
 		return
 	}
 

@@ -14,9 +14,9 @@ func TestGameServerHandshake(t *testing.T) {
 	server, client := net.Pipe()
 	go serveGame(server)
 
-	hello := make([]byte, 2)
-	if _, err := io.ReadFull(client, hello); err != nil || hello[0] != 0xAF || hello[1] != 0x00 {
-		t.Fatalf("hello = %x %v", hello, err)
+	hello := make([]byte, 2+33)
+	if _, err := io.ReadFull(client, hello); err != nil || hello[0] != 0xAF || hello[1] != 0x00 || hello[2] != 0x8F {
+		t.Fatalf("hello must be AF 00 then an unrequested pong, got %x %v", hello, err)
 	}
 	// Nothing else until the client pings: the first pong must precede the load.
 	ping := make([]byte, 13)
