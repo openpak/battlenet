@@ -227,14 +227,22 @@ func assignNPCs() []byte {
 	return out
 }
 
-// npcDialog opens the NPC dialog panel: 28 | 01 | u32 npcId | 00 | 96-byte
-// quest blob (all zero: no quests yet).
+// npcDialog opens the NPC dialog panel. 27 (40 bytes: 01, u32 npcId, u8, u8
+// message count, 32 bytes) creates the NPC's message list, which the 28
+// handler (01, u32 npcId, u8, 96-byte quest blob) requires: without a fresh 27
+// before every 28 the panel opens empty with no close path and the game sits
+// stuck. Talk and Trade entries come from the client's own tables, so an
+// all-zero blob is a valid "no quests yet".
 func npcDialog(npcID uint32) []byte {
+	msgs := make([]byte, 40)
+	msgs[0] = 0x27
+	msgs[1] = 1
+	binary.LittleEndian.PutUint32(msgs[2:6], npcID)
 	p := make([]byte, 103)
 	p[0] = 0x28
 	p[1] = 1
 	binary.LittleEndian.PutUint32(p[2:6], npcID)
-	return p
+	return append(msgs, p...)
 }
 
 type pendingJoin struct {

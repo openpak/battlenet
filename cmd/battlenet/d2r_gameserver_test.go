@@ -74,8 +74,8 @@ func TestGameServerHandshake(t *testing.T) {
 	if _, err := client.Write(append(walk, talk...)); err != nil {
 		t.Fatal(err)
 	}
-	dialog := make([]byte, 103)
-	if _, err := io.ReadFull(client, dialog); err != nil || dialog[0] != 0x28 || dialog[1] != 1 || dialog[2] != 2 {
+	dialog := make([]byte, 40+103)
+	if _, err := io.ReadFull(client, dialog); err != nil || dialog[0] != 0x27 || dialog[2] != 2 || dialog[40] != 0x28 || dialog[41] != 1 || dialog[42] != 2 {
 		t.Fatalf("dialog = %x %v", dialog[:8], err)
 	}
 	client.Close()
