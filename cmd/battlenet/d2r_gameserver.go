@@ -69,17 +69,14 @@ func serveGame(conn net.Conn) {
 	flags[0] = 0x01
 	flags[1] = 0 // Normal
 	binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
-	flags[6] = 1 // edition, must be 1..3
+	flags[6] = join.edition
 	flags[7] = 0 // ladder
-	if _, err := conn.Write(joinBurst(join.class, join.name, flags)); err != nil {
-		return
-	}
-	log.Printf("D2GS %s: join burst sent for %q (class %d, game %d, seed %#x, area %d)", remote, join.name, join.class, join.gameID, townSeed, townArea)
+	burstSent := false
 
 	// Client packets are delimited by their first byte. The in-game heartbeat
 	// pings (6D) every 5 s and the update build drops the connection after one
 	// unanswered tick, so pongs go out immediately.
-	sizes := map[byte]int{0x68: 45, 0x6D: 13, 0x6B: 1, 0x69: 1}
+	sizes := map[byte]int{0x68: 45, 0x6D: 13, 0x6B: 1, 0x69: 1, 0x6F: 5}
 	r := bufio.NewReader(conn)
 	for {
 		id, err := r.ReadByte()
@@ -101,11 +98,19 @@ func serveGame(conn net.Conn) {
 		}
 		switch id {
 		case 0x6D:
-			pong := make([]byte, 33)
-			pong[0] = 0x8F
-			copy(pong[1:5], pkt[1:5])
-			if _, err := conn.Write(pong); err != nil {
+			log.Printf("D2GS %s: ping tick=%d", remote, binary.LittleEndian.Uint32(pkt[1:5]))
+			if _, err := conn.Write(pong(pkt)); err != nil {
 				return
+			}
+			// The client pings from game init and checks for the answer inside
+			// its loader too, so the burst goes out only after the first ping
+			// is answered, with pongs interleaved (the one before 04 matters).
+			if !burstSent {
+				burstSent = true
+				if _, err := conn.Write(joinBurst(join.class, join.name, flags)); err != nil {
+					return
+				}
+				log.Printf("D2GS %s: join burst sent for %q (class %d, edition %d, game %d, seed %#x, area %d)", remote, join.name, join.class, join.edition, join.gameID, townSeed, townArea)
 			}
 		case 0x68:
 			log.Printf("D2GS %s: logon packet (unexpected on this build): class=%d name=%q", remote, pkt[7], trimNUL(pkt[29:45]))
@@ -118,9 +123,10 @@ func serveGame(conn net.Conn) {
 }
 
 type pendingJoin struct {
-	name   string
-	class  byte
-	gameID uint32
+	name    string
+	class   byte
+	edition byte // 1 classic, 2 expansion, 3 RotW: the character's, per the roster flags
+	gameID  uint32
 }
 
 var (
@@ -131,11 +137,14 @@ var (
 // rememberPendingJoin notes who is about to dial the game host, from the
 // roster entry the GameJoin named.
 func rememberPendingJoin(characterID uint64, gameID uint32) {
-	j := &pendingJoin{name: "Player", gameID: gameID}
+	j := &pendingJoin{name: "Player", edition: 1, gameID: gameID}
 	charMu.Lock()
 	for _, c := range charList {
 		if c.ID == characterID {
 			j.name, j.class = c.Name, byte(c.Class)
+			if c.Flags&0x20 != 0 {
+				j.edition = 2
+			}
 		}
 	}
 	charMu.Unlock()
@@ -148,7 +157,7 @@ func takePendingJoin() pendingJoin {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
 	if pending == nil {
-		return pendingJoin{name: "Player"}
+		return pendingJoin{name: "Player", edition: 1}
 	}
 	j := *pending
 	pending = nil
@@ -181,7 +190,9 @@ var revealCells = [][2]uint16{
 // (the handshake copy does not reach the game), 03 load act, 07 reveals, 59
 // assign player (71 bytes), 0B set local player, 04 load complete.
 func joinBurst(class byte, name string, flags []byte) []byte {
-	out := append([]byte{}, flags[:8]...)
+	idle := pong(nil)
+	out := append(append([]byte{}, flags[:8]...), 0x00) // 00 = game loading, as the classic burst orders it
+	out = append(out, idle...)
 	act := make([]byte, 12)
 	act[0] = 0x03
 	act[1] = 0
@@ -189,6 +200,7 @@ func joinBurst(class byte, name string, flags []byte) []byte {
 	binary.LittleEndian.PutUint16(act[6:8], townArea)
 	binary.LittleEndian.PutUint32(act[8:12], townSeed2)
 	out = append(out, act...)
+	out = append(out, idle...)
 	for _, c := range revealCells {
 		r := make([]byte, 6)
 		r[0] = 0x07
@@ -197,6 +209,7 @@ func joinBurst(class byte, name string, flags []byte) []byte {
 		r[5] = townArea
 		out = append(out, r...)
 	}
+	out = append(out, idle...)
 	assign := make([]byte, 71)
 	assign[0] = 0x59
 	binary.LittleEndian.PutUint32(assign[1:5], playerID)
@@ -205,11 +218,24 @@ func joinBurst(class byte, name string, flags []byte) []byte {
 	binary.LittleEndian.PutUint16(assign[67:69], spawnX)
 	binary.LittleEndian.PutUint16(assign[69:71], spawnY)
 	out = append(out, assign...)
+	out = append(out, idle...)
 	local := make([]byte, 6)
 	local[0] = 0x0B
 	binary.LittleEndian.PutUint32(local[2:6], playerID)
 	out = append(out, local...)
-	return append(out, 0x04)
+	out = append(out, idle...)
+	return append(append(out, 0x04), idle...)
+}
+
+// pong answers a 13-byte 6D ping (or stands in for one, unrequested pongs are
+// harmless): 8F + eight dwords, the tick echoed, the rest zero.
+func pong(ping []byte) []byte {
+	p := make([]byte, 33)
+	p[0] = 0x8F
+	if len(ping) >= 5 {
+		copy(p[1:5], ping[1:5])
+	}
+	return p
 }
 
 func trimNUL(b []byte) []byte {

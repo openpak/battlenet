@@ -18,30 +18,50 @@ func TestGameServerHandshake(t *testing.T) {
 	if _, err := io.ReadFull(client, hello); err != nil || hello[0] != 0xAF || hello[1] != 0x00 {
 		t.Fatalf("hello = %x %v", hello, err)
 	}
-	burst := make([]byte, 8+12+6*len(revealCells)+71+6+1)
-	if _, err := io.ReadFull(client, burst); err != nil {
-		t.Fatal(err)
-	}
-	ids := []byte{burst[0], burst[8], burst[20], burst[20+6*len(revealCells)], burst[91+6*len(revealCells)], burst[97+6*len(revealCells)]}
-	if string(ids) != string([]byte{0x01, 0x03, 0x07, 0x59, 0x0B, 0x04}) {
-		t.Fatalf("burst ids = %x", ids)
-	}
-	if burst[6] != 1 {
-		t.Fatalf("edition byte must be 1..3, got %d", burst[6])
-	}
-	assign := burst[20+6*len(revealCells):]
-	if string(assign[6:12]) != "Player" {
-		t.Fatalf("assign player = %x", assign[:71])
-	}
+	// Nothing else until the client pings: the first pong must precede the load.
 	ping := make([]byte, 13)
 	ping[0] = 0x6D
 	binary.LittleEndian.PutUint32(ping[1:5], 1234)
 	if _, err := client.Write(ping); err != nil {
 		t.Fatal(err)
 	}
-	pong := make([]byte, 33)
-	if _, err := io.ReadFull(client, pong); err != nil || pong[0] != 0x8F || binary.LittleEndian.Uint32(pong[1:5]) != 1234 {
-		t.Fatalf("pong = %x %v", pong, err)
+	sizes := map[byte]int{0x8F: 33, 0x01: 8, 0x00: 1, 0x03: 12, 0x07: 6, 0x59: 71, 0x0B: 6, 0x04: 1}
+	var ids []byte
+	first := true
+	for len(ids) == 0 || ids[len(ids)-1] != 0x04 || first {
+		head := make([]byte, 1)
+		if _, err := io.ReadFull(client, head); err != nil {
+			t.Fatal(err)
+		}
+		n, ok := sizes[head[0]]
+		if !ok {
+			t.Fatalf("unexpected server packet %#x after %x", head[0], ids)
+		}
+		body := make([]byte, n-1)
+		if _, err := io.ReadFull(client, body); err != nil {
+			t.Fatal(err)
+		}
+		if first {
+			if head[0] != 0x8F || binary.LittleEndian.Uint32(body[0:4]) != 1234 {
+				t.Fatalf("first packet after the ping must be its pong, got %#x %x", head[0], body)
+			}
+			first = false
+		}
+		if head[0] == 0x01 && body[5] != 1 {
+			t.Fatalf("edition byte must be 1..3, got %d", body[5])
+		}
+		if head[0] == 0x59 && string(body[5:11]) != "Player" {
+			t.Fatalf("assign player = %x", body)
+		}
+		ids = append(ids, head[0])
+	}
+	want := []byte{0x8F, 0x01, 0x00, 0x8F, 0x03, 0x8F, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x8F, 0x59, 0x8F, 0x0B, 0x8F, 0x04}
+	if string(ids) != string(want) {
+		t.Fatalf("sequence = %x, want %x", ids, want)
+	}
+	trailing := make([]byte, 33)
+	if _, err := io.ReadFull(client, trailing); err != nil || trailing[0] != 0x8F {
+		t.Fatalf("pong after 04 missing: %x %v", trailing, err)
 	}
 	client.Close()
 }
