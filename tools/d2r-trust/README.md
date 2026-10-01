@@ -1,10 +1,19 @@
 # D2R game-server trust patch
 
-Diablo II: Resurrected (Switch 1.0.34.0, build `4DE22400C997ED2373F0643E9FE9B079DB0E8D72`)
-dials the GameJoin host on TCP 443 with its own OpenSSL, trusting only a DigiCert bundle in
-its read-only segment (module offset 0x1b00033, 4741 bytes). Neither nn::ssl nor the console
-certificate store is consulted, and DigiCert no longer issues under that root, so the only
-way to reach `d2gs.battle.net` is to put the OpenPak CA in that slot at load time.
+Diablo II: Resurrected (Switch) dials the GameJoin host on TCP 443 with its own OpenSSL,
+trusting only a PEM bundle in its read-only segment. Neither nn::ssl nor the console
+certificate store is consulted, so `d2gs.battle.net` is reachable only with the OpenPak CA in
+that slot at load time. Two builds exist and the patch is generated for both (`BUILDS` in
+`make-ips.py`):
+
+| Build | What | Slot |
+|---|---|---|
+| `4DE22400C997ED2373F0643E9FE9B079DB0E8D72` | base cartridge/eShop NSP; the binary all RE addresses in docs/d2r-protocol.md refer to | 0x1b00033, 4741 bytes, 3 certs (DigiCert High Assurance EV root + intermediate) |
+| `DB0507F36B84200AC05F75D76ED5026F903E6C9` | update v2228224 "1.0.34.0", **the build consoles and emulators actually run** | 0x1d6539a, 13093 bytes, 8 certs (adds DigiCert Global Root CA / G2, TLS RSA SHA256 2020 CA1, and Blizzard's own `*.diablo2.blizzard.com` leaf) |
+
+No-patch alternative for the update build: it trusts DigiCert Global Root G2 and Global Root CA,
+which DigiCert still issues under, so a bought DigiCert certificate for a hostname OpenPak owns
+would be accepted as-is (the base build would still need the patch). Not pursued yet.
 
 `make-ips.py <ca.pem>` writes the IPS32 exefs patch. It carries only our public CA and
 newline padding; no game bytes. Offsets are NSO-header inclusive (+0x100), the convention
