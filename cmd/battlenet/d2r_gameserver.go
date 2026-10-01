@@ -22,8 +22,8 @@ import (
 // packets. The client leaves "creating game" only once complete in-game packets
 // arrive every < 15 s -- that part is the game server still to be written.
 //
-// ponytail: handshake only, logs everything, no world. The next step is the
-// in-game packet stream, which needs a D2 game simulation behind this socket.
+// ponytail: handshake plus the minimal join burst for one hard-coded town seed,
+// pongs every ping, logs everything else. No units, no simulation yet.
 
 const (
 	d2gsFlagBase      = 0x4
@@ -76,28 +76,39 @@ func serveGame(conn net.Conn) {
 	binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
 	flags[6] = 1 // expansion
 	flags[7] = 0 // ladder
-	if _, err := conn.Write(append(flags, 0x00)); err != nil {
+	if _, err := conn.Write(append(append([]byte{}, flags...), 0x00)); err != nil {
 		return
 	}
 
 	buf := make([]byte, 4096)
-	sentStart := false
+	sentStart, inGame := false, false
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
 			log.Printf("D2GS %s RX %x", remote, buf[:n])
-			if buf[0] == 0x6D && !sentStart {
-				sentStart = true
-				if _, err := conn.Write([]byte{0x02}); err != nil {
-					return
+			switch buf[0] {
+			case 0x6D: // ping: handshake gets 02 once, every ping gets a pong within 5 s
+				if !sentStart {
+					sentStart = true
+					if _, err := conn.Write([]byte{0x02}); err != nil {
+						return
+					}
 				}
-			}
-			if buf[0] == 0x6D && n >= 5 {
 				pong := make([]byte, 33)
 				pong[0] = 0x8F
-				copy(pong[1:5], buf[1:5])
+				if n >= 5 {
+					copy(pong[1:5], buf[1:5])
+				}
 				if _, err := conn.Write(pong); err != nil {
 					return
+				}
+			case 0x6B: // the client is in state 6: the first in-game packets end "creating game"
+				if !inGame {
+					inGame = true
+					if _, err := conn.Write(joinBurst(logon[7], name, flags)); err != nil {
+						return
+					}
+					log.Printf("D2GS %s: join burst sent (seed %#x, area %d)", remote, townSeed, townArea)
 				}
 			}
 		}
@@ -106,6 +117,63 @@ func serveGame(conn net.Conn) {
 			return
 		}
 	}
+}
+
+// A known (seed, spawn) pair for the Act I town: from a published 1.13 capture
+// (private scratch 3.3.4/4.2). The
+// client generates the level from the seed; the reveal cells and the player
+// position must fall inside rooms that exist for THIS seed or the client
+// crashes, so these four numbers travel together. The map generator is the
+// same in D2R (ponytail: one hard-coded town until we run a generator).
+const (
+	townSeed  = 0x01403123
+	townSeed2 = 0x4D4FF68B
+	townArea  = 1    // Rogue Encampment
+	spawnX    = 5653 // subtiles
+	spawnY    = 5523
+	playerID  = 1
+)
+
+var revealCells = [][2]uint16{
+	{0x460, 0x448}, {0x468, 0x448}, {0x470, 0x448},
+	{0x460, 0x450}, {0x468, 0x450}, {0x470, 0x450},
+	{0x460, 0x458}, {0x468, 0x458}, {0x470, 0x458},
+}
+
+// joinBurst is the minimal in-game sequence the update build needs to put the
+// local player in town (ingame-packets.md section 2, update layouts): 01 flags
+// (the handshake copy does not reach the game), 03 load act, 07 reveals, 59
+// assign player (71 bytes), 0B set local player, 04 load complete.
+func joinBurst(class byte, name string, flags []byte) []byte {
+	out := append([]byte{}, flags[:8]...)
+	act := make([]byte, 12)
+	act[0] = 0x03
+	act[1] = 0
+	binary.LittleEndian.PutUint32(act[2:6], townSeed)
+	binary.LittleEndian.PutUint16(act[6:8], townArea)
+	binary.LittleEndian.PutUint32(act[8:12], townSeed2)
+	out = append(out, act...)
+	for _, c := range revealCells {
+		r := make([]byte, 6)
+		r[0] = 0x07
+		binary.LittleEndian.PutUint16(r[1:3], c[0])
+		binary.LittleEndian.PutUint16(r[3:5], c[1])
+		r[5] = townArea
+		out = append(out, r...)
+	}
+	assign := make([]byte, 71)
+	assign[0] = 0x59
+	binary.LittleEndian.PutUint32(assign[1:5], playerID)
+	assign[5] = class
+	copy(assign[6:66], name) // NUL-terminated, at most 60 used
+	binary.LittleEndian.PutUint16(assign[67:69], spawnX)
+	binary.LittleEndian.PutUint16(assign[69:71], spawnY)
+	out = append(out, assign...)
+	local := make([]byte, 6)
+	local[0] = 0x0B
+	binary.LittleEndian.PutUint32(local[2:6], playerID)
+	out = append(out, local...)
+	return append(out, 0x04)
 }
 
 func trimNUL(b []byte) []byte {
