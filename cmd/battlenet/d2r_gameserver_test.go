@@ -17,6 +17,15 @@ func TestGameServerHandshake(t *testing.T) {
 	if _, err := io.ReadFull(client, hello); err != nil || hello[0] != 0xAF || hello[1] != 0x00 {
 		t.Fatalf("hello = %x %v", hello, err)
 	}
+	early := make([]byte, 13)
+	early[0] = 0x6D
+	if _, err := client.Write(early); err != nil {
+		t.Fatal(err)
+	}
+	pong := make([]byte, 33)
+	if _, err := io.ReadFull(client, pong); err != nil || pong[0] != 0x8F {
+		t.Fatalf("early ping not ponged: %x %v", pong, err)
+	}
 	logon := make([]byte, 45)
 	logon[0] = 0x68
 	binary.LittleEndian.PutUint32(logon[1:5], 7)
@@ -43,7 +52,7 @@ func TestGameServerHandshake(t *testing.T) {
 	if _, err := io.ReadFull(client, reply); err != nil {
 		t.Fatal(err)
 	}
-	if reply[0] != 0x02 || reply[1] != 0x8F || binary.LittleEndian.Uint32(reply[2:6]) != 1234 {
+	if reply[0] != 0x8F || binary.LittleEndian.Uint32(reply[1:5]) != 1234 || reply[33] != 0x02 {
 		t.Fatalf("after ping = %x", reply)
 	}
 	if _, err := client.Write([]byte{0x6B}); err != nil {

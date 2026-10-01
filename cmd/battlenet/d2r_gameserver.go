@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"io"
 	"log"
@@ -47,9 +48,7 @@ func gameServer(addr string) {
 	}
 }
 
-// serveGame walks one connection through the handshake and logs every packet
-// after it. It returns the last client packet seen so the test can check the
-// order without a real title.
+// serveGame walks one connection through the handshake and the join burst.
 func serveGame(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
@@ -59,62 +58,76 @@ func serveGame(conn net.Conn) {
 	if _, err := conn.Write([]byte{0xAF, 0x00}); err != nil {
 		return
 	}
-	logon := make([]byte, 45)
-	if _, err := io.ReadFull(conn, logon); err != nil || logon[0] != 0x68 {
-		log.Printf("D2GS %s: no logon packet (%x, %v)", remote, logon, err)
-		return
-	}
-	hash := binary.LittleEndian.Uint32(logon[1:5])
-	token := binary.LittleEndian.Uint16(logon[5:7])
-	charID := binary.LittleEndian.Uint64(logon[21:29])
-	name := string(trimNUL(logon[29:45]))
-	log.Printf("D2GS %s: logon hash=%d token=%d class=%d character=%d name=%q", remote, hash, token, logon[7], charID, name)
 
-	flags := make([]byte, 8)
-	flags[0] = 0x01
-	flags[1] = 0 // Normal
-	binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
-	flags[6] = 1 // expansion
-	flags[7] = 0 // ladder
-	if _, err := conn.Write(append(append([]byte{}, flags...), 0x00)); err != nil {
-		return
-	}
-
-	buf := make([]byte, 4096)
+	// Client packets are delimited by their first byte. The game loop pings
+	// (6D) from the moment the socket is open, before and after the logon, and
+	// the update build drops the connection if a ping is unanswered for 5 s,
+	// so pongs go out immediately whatever state we are in.
+	sizes := map[byte]int{0x68: 45, 0x6D: 13, 0x6B: 1, 0x69: 1}
+	var flags []byte
+	var name string
+	var class byte
+	r := bufio.NewReader(conn)
 	sentStart, inGame := false, false
 	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			log.Printf("D2GS %s RX %x", remote, buf[:n])
-			switch buf[0] {
-			case 0x6D: // ping: handshake gets 02 once, every ping gets a pong within 5 s
-				if !sentStart {
-					sentStart = true
-					if _, err := conn.Write([]byte{0x02}); err != nil {
-						return
-					}
-				}
-				pong := make([]byte, 33)
-				pong[0] = 0x8F
-				if n >= 5 {
-					copy(pong[1:5], buf[1:5])
-				}
-				if _, err := conn.Write(pong); err != nil {
-					return
-				}
-			case 0x6B: // the client is in state 6: the first in-game packets end "creating game"
-				if !inGame {
-					inGame = true
-					if _, err := conn.Write(joinBurst(logon[7], name, flags)); err != nil {
-						return
-					}
-					log.Printf("D2GS %s: join burst sent (seed %#x, area %d)", remote, townSeed, townArea)
-				}
-			}
-		}
+		id, err := r.ReadByte()
 		if err != nil {
 			log.Printf("D2GS %s closed: %v", remote, err)
 			return
+		}
+		size, ok := sizes[id]
+		if !ok {
+			rest, _ := r.Peek(r.Buffered())
+			log.Printf("D2GS %s: unknown packet %#x, %d bytes buffered after it: %x", remote, id, len(rest), rest)
+			return
+		}
+		pkt := make([]byte, size)
+		pkt[0] = id
+		if _, err := io.ReadFull(r, pkt[1:]); err != nil {
+			log.Printf("D2GS %s: short packet %#x: %v", remote, id, err)
+			return
+		}
+		switch id {
+		case 0x6D:
+			pong := make([]byte, 33)
+			pong[0] = 0x8F
+			copy(pong[1:5], pkt[1:5])
+			if _, err := conn.Write(pong); err != nil {
+				return
+			}
+			if flags != nil && !sentStart {
+				sentStart = true
+				if _, err := conn.Write([]byte{0x02}); err != nil {
+					return
+				}
+			}
+		case 0x68:
+			hash := binary.LittleEndian.Uint32(pkt[1:5])
+			token := binary.LittleEndian.Uint16(pkt[5:7])
+			charID := binary.LittleEndian.Uint64(pkt[21:29])
+			class = pkt[7]
+			name = string(trimNUL(pkt[29:45]))
+			log.Printf("D2GS %s: logon hash=%d token=%d class=%d character=%d name=%q", remote, hash, token, class, charID, name)
+			flags = make([]byte, 8)
+			flags[0] = 0x01
+			flags[1] = 0 // Normal
+			binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
+			flags[6] = 1 // edition
+			flags[7] = 0 // ladder
+			if _, err := conn.Write(append(append([]byte{}, flags...), 0x00)); err != nil {
+				return
+			}
+		case 0x6B:
+			if flags == nil || inGame {
+				continue
+			}
+			inGame = true
+			if _, err := conn.Write(joinBurst(class, name, flags)); err != nil {
+				return
+			}
+			log.Printf("D2GS %s: join burst sent (seed %#x, area %d)", remote, townSeed, townArea)
+		case 0x69:
+			log.Printf("D2GS %s: client left the game", remote)
 		}
 	}
 }
