@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -59,16 +60,27 @@ func serveGame(conn net.Conn) {
 		return
 	}
 
-	// Client packets are delimited by their first byte. The game loop pings
-	// (6D) from the moment the socket is open, before and after the logon, and
-	// the update build drops the connection if a ping is unanswered for 5 s,
-	// so pongs go out immediately whatever state we are in.
+	// The update build never identifies itself on this socket (no 0x68 on the
+	// online path), so the player is whoever made the last GameJoin.
+	// ponytail: one pending join for the whole box; key it by connection once
+	// two players can be joining at the same time.
+	join := takePendingJoin()
+	flags := make([]byte, 8)
+	flags[0] = 0x01
+	flags[1] = 0 // Normal
+	binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
+	flags[6] = 1 // edition, must be 1..3
+	flags[7] = 0 // ladder
+	if _, err := conn.Write(joinBurst(join.class, join.name, flags)); err != nil {
+		return
+	}
+	log.Printf("D2GS %s: join burst sent for %q (class %d, game %d, seed %#x, area %d)", remote, join.name, join.class, join.gameID, townSeed, townArea)
+
+	// Client packets are delimited by their first byte. The in-game heartbeat
+	// pings (6D) every 5 s and the update build drops the connection after one
+	// unanswered tick, so pongs go out immediately.
 	sizes := map[byte]int{0x68: 45, 0x6D: 13, 0x6B: 1, 0x69: 1}
-	var flags []byte
-	var name string
-	var class byte
 	r := bufio.NewReader(conn)
-	sentStart, inGame := false, false
 	for {
 		id, err := r.ReadByte()
 		if err != nil {
@@ -95,41 +107,52 @@ func serveGame(conn net.Conn) {
 			if _, err := conn.Write(pong); err != nil {
 				return
 			}
-			if flags != nil && !sentStart {
-				sentStart = true
-				if _, err := conn.Write([]byte{0x02}); err != nil {
-					return
-				}
-			}
 		case 0x68:
-			hash := binary.LittleEndian.Uint32(pkt[1:5])
-			token := binary.LittleEndian.Uint16(pkt[5:7])
-			charID := binary.LittleEndian.Uint64(pkt[21:29])
-			class = pkt[7]
-			name = string(trimNUL(pkt[29:45]))
-			log.Printf("D2GS %s: logon hash=%d token=%d class=%d character=%d name=%q", remote, hash, token, class, charID, name)
-			flags = make([]byte, 8)
-			flags[0] = 0x01
-			flags[1] = 0 // Normal
-			binary.LittleEndian.PutUint32(flags[2:6], d2gsFlagBase|d2gsFlagExpansion)
-			flags[6] = 1 // edition
-			flags[7] = 0 // ladder
-			if _, err := conn.Write(append(append([]byte{}, flags...), 0x00)); err != nil {
-				return
-			}
+			log.Printf("D2GS %s: logon packet (unexpected on this build): class=%d name=%q", remote, pkt[7], trimNUL(pkt[29:45]))
 		case 0x6B:
-			if flags == nil || inGame {
-				continue
-			}
-			inGame = true
-			if _, err := conn.Write(joinBurst(class, name, flags)); err != nil {
-				return
-			}
-			log.Printf("D2GS %s: join burst sent (seed %#x, area %d)", remote, townSeed, townArea)
+			log.Printf("D2GS %s: client reports loaded", remote)
 		case 0x69:
 			log.Printf("D2GS %s: client left the game", remote)
 		}
 	}
+}
+
+type pendingJoin struct {
+	name   string
+	class  byte
+	gameID uint32
+}
+
+var (
+	pendingMu sync.Mutex
+	pending   *pendingJoin
+)
+
+// rememberPendingJoin notes who is about to dial the game host, from the
+// roster entry the GameJoin named.
+func rememberPendingJoin(characterID uint64, gameID uint32) {
+	j := &pendingJoin{name: "Player", gameID: gameID}
+	charMu.Lock()
+	for _, c := range charList {
+		if c.ID == characterID {
+			j.name, j.class = c.Name, byte(c.Class)
+		}
+	}
+	charMu.Unlock()
+	pendingMu.Lock()
+	pending = j
+	pendingMu.Unlock()
+}
+
+func takePendingJoin() pendingJoin {
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	if pending == nil {
+		return pendingJoin{name: "Player"}
+	}
+	j := *pending
+	pending = nil
+	return j
 }
 
 // A known (seed, spawn) pair for the Act I town: from a published 1.13 capture

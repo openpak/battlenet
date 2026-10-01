@@ -504,6 +504,7 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			return nil, false
 		}
 		body := gameJoinBody(rec.Host, rec.ID)
+		rememberPendingJoin(req.CharacterID, rec.ID)
 		log.Printf("D2RSVC %s: GameJoin %q -> host=%s port=%d id=%d (%d-byte body)",
 			s.remote, req.Key, rec.Host, rec.Port, rec.ID, len(body))
 		return body, true
