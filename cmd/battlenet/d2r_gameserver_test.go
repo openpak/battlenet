@@ -63,8 +63,8 @@ func TestGameServerHandshake(t *testing.T) {
 	if _, err := io.ReadFull(client, trailing); err != nil || trailing[0] != 0x8F {
 		t.Fatalf("pong after 04 missing: %x %v", trailing, err)
 	}
-	npcs := make([]byte, 13*len(townNPCs))
-	if _, err := io.ReadFull(client, npcs); err != nil || npcs[0] != 0xAC || npcs[12] != 0x0d || npcs[13] != 0xAC {
+	npcs := make([]byte, 14*len(townNPCs))
+	if _, err := io.ReadFull(client, npcs); err != nil || npcs[0] != 0xAC || npcs[12] != 0x0e || npcs[13] != 0x01 || npcs[14] != 0xAC {
 		t.Fatalf("npc assignments = %x %v", npcs, err)
 	}
 	// a long walk packet must be consumed whole, then talking to an NPC opens its dialog

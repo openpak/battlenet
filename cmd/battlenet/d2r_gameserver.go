@@ -207,18 +207,21 @@ var townNPCs = []townNPC{
 	{6, 155, 0, 40},    // Warriv
 }
 
-// assignNPCs: AC per NPC, classic header only (totalLen 0x0d, no state stream).
+// assignNPCs: AC per NPC with a one-byte state stream: mode 1 (neutral) in
+// bits 0-3, no component data. Without it the mode reads as 0, the death
+// mode, and the client draws a corpse it will never target.
 func assignNPCs() []byte {
 	var out []byte
 	for _, n := range townNPCs {
-		p := make([]byte, 13)
+		p := make([]byte, 14)
 		p[0] = 0xAC
 		binary.LittleEndian.PutUint32(p[1:5], n.id)
 		binary.LittleEndian.PutUint16(p[5:7], n.code)
 		binary.LittleEndian.PutUint16(p[7:9], uint16(spawnX+n.dx))
 		binary.LittleEndian.PutUint16(p[9:11], uint16(spawnY+n.dy))
 		p[11] = 100 // life %
-		p[12] = 0x0d
+		p[12] = 0x0e
+		p[13] = 0x01 // mode 1 = neutral
 		out = append(out, p...)
 	}
 	return out
