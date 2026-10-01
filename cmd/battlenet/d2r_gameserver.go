@@ -80,7 +80,7 @@ func serveGame(conn net.Conn) {
 	// Client packets are delimited by their first byte. The in-game heartbeat
 	// pings (6D) every 5 s and the update build drops the connection after one
 	// unanswered tick, so pongs go out immediately.
-	sizes := map[byte]int{0x68: 45, 0x6D: 13, 0x6B: 1, 0x69: 1, 0x6F: 5}
+	sizes := clientPacketSizes
 	r := bufio.NewReader(conn)
 	for {
 		id, err := r.ReadByte()
@@ -90,9 +90,12 @@ func serveGame(conn net.Conn) {
 		}
 		size, ok := sizes[id]
 		if !ok {
+			// Unknown id: log it with what follows and drop the buffered bytes
+			// rather than the connection; the stream resyncs at the next read.
 			rest, _ := r.Peek(r.Buffered())
 			log.Printf("D2GS %s: unknown packet %#x, %d bytes buffered after it: %x", remote, id, len(rest), rest)
-			return
+			r.Discard(len(rest))
+			continue
 		}
 		pkt := make([]byte, size)
 		pkt[0] = id
@@ -122,8 +125,27 @@ func serveGame(conn net.Conn) {
 			log.Printf("D2GS %s: client reports loaded", remote)
 		case 0x69:
 			log.Printf("D2GS %s: client left the game", remote)
+		case 0x6F:
+		default:
+			log.Printf("D2GS %s: client packet %#x %x", remote, id, pkt[1:])
 		}
 	}
+}
+
+// clientPacketSizes: lengths including the id byte. Classic ids from the public
+// D2GS table (private scratch), plus the
+// handshake ids and the console build's 0x42 position report (observed: id +
+// 6 bytes). Ids the update build changed are corrected as they are found.
+var clientPacketSizes = map[byte]int{
+	0x01: 5, 0x02: 9, 0x03: 5, 0x04: 9, 0x05: 5, 0x06: 9, 0x07: 9, 0x08: 5, 0x09: 9, 0x0A: 9,
+	0x0B: 1, 0x0C: 5, 0x0D: 9, 0x0E: 9, 0x0F: 5, 0x10: 9, 0x11: 9, 0x12: 1, 0x13: 9,
+	0x16: 13, 0x17: 5, 0x18: 17, 0x19: 5, 0x1A: 9, 0x1B: 9, 0x1C: 3, 0x1D: 9, 0x1E: 9, 0x1F: 17,
+	0x20: 13, 0x21: 9, 0x22: 5, 0x23: 9, 0x24: 5, 0x25: 9, 0x26: 13, 0x27: 9, 0x28: 9, 0x29: 9, 0x2A: 9,
+	0x2F: 9, 0x30: 9, 0x31: 9, 0x32: 17, 0x33: 17, 0x34: 5, 0x35: 17, 0x36: 9, 0x37: 5, 0x38: 13,
+	0x39: 5, 0x3A: 3, 0x3B: 3, 0x3C: 9, 0x3D: 5, 0x3E: 5, 0x3F: 3, 0x40: 1, 0x41: 1, 0x42: 7,
+	0x44: 17, 0x45: 9, 0x46: 13, 0x47: 13, 0x48: 1, 0x49: 9, 0x4B: 9, 0x4C: 5, 0x4D: 3, 0x4F: 7,
+	0x50: 9, 0x51: 9, 0x52: 5, 0x53: 1,
+	0x68: 45, 0x69: 1, 0x6B: 1, 0x6D: 13, 0x6F: 5,
 }
 
 type pendingJoin struct {
