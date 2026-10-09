@@ -167,6 +167,8 @@ the Ghidra headless full analysis runs from `~/d2r-work/ghidra_proj/`.
 | | | ClientPing | 0xf1127ff6 |
 | | | ServerPing | 0x0644b9e5 |
 | GameVersion | 0x3d930f0e | SetGameVersion | 0xd48de460 |
+| | | GameUpdateRequired (push) | 0x01b1b8b2 |
+| | | GameUpdateCanceled (push) | 0xaa1a02d0 |
 | Character (init 0x16c31d4) | 0x607fd196 | CreateCharacter | 0x043afeb5 |
 | | | DeleteCharacter | 0xa1d52098 |
 | | | ReadCharacterList | 0x47821811 |
@@ -203,8 +205,7 @@ map (`Could not find ExecuteCommandCallback: Online`); it is NOT the RPC
 layer (FNV of names matches no wire hash).
 
 Still open: ConvertCharacter's hash, GameManagement 0xa605d1e4's name,
-AcceptLobbyInvite/RejectLobbyInvite hashes, GameVersion's
-GameUpdateRequired/GameUpdateCanceled push hashes, Stats/Network/IGR
+AcceptLobbyInvite/RejectLobbyInvite hashes, Stats/Network/IGR
 method hashes. None is on the solo create/join path; the Ghidra project
 will settle them.
 
@@ -749,3 +750,29 @@ difficulty — instead of echoing a string back.
   account=…" via 0x205224; error 666 = the 15 s state timeout), but the
   Ryujinx guest log does not show them yet — capturing guest stderr would
   settle which state fails.
+
+## Update required (static, 2026-10-09)
+
+Read from the update build (DB0507F3...) and the base dump; both agree. Scripts and
+disassembly in `private scratch`.
+
+- **LoginResponse field 4 does nothing.** The ProcessTask callback (update 0x1d4d50, base
+  0x203c64 file / 0x203d64 Ghidra) parses LoginResponse into a stack local, copies the two
+  string slots (fields 1 and 2) into the session, and destroys the message. The field-4 pointer
+  and the field-3 bool are initialised and never read.
+- **GameVersion pushes.** Method hashes come from the register blocks of the GameVersion init
+  (update 0x19c9f24, `mov w8,#0xb8b2; movk w8,#0x1b1,lsl#16`): GameUpdateRequired 0x01b1b8b2,
+  GameUpdateCanceled 0xaa1a02d0. The game-side implementation (ctor 0x17727f0, vtable
+  0x2102840) copies the pushed `classic.protocol.v1.game_version.GameUpdateRequest`
+  {1 string, 5 u64} into a member, then calls its primary listener and every registered
+  listener (`vt+0x10`; GameUpdateCanceled resets the member and calls `vt+0x18`). Its accessors:
+  "update required" = field 1 non-empty (vt+0x28), field 1 (vt+0x30), field 5 (vt+0x38).
+- **Not traced:** which listener the UI registers and what it shows (dialog, go offline,
+  nothing). Field 5's meaning is unknown. The gateway therefore only logs the verdict
+  (`VERSION ...` lines) and sends GameUpdateRequired {1: text} after SetGameVersion only with
+  `BATTLENET_GAME_UPDATE_PUSH` set. The next step is one run with an outdated build and the knob
+  on, watching the title.
+- The console's own gate stays first: nx-baas refuses an outdated title at aauth (0111, the
+  2124-3001 dialog) before it ever gets an id_token, so this path only sees clients that got
+  past aauth.
+
