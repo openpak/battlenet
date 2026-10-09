@@ -43,6 +43,8 @@ func d2rMethodName(service, method uint32) string {
 		return "D2rServicesConnection.ServerPing"
 	case service == gameVersionHash && method == gameSetGameVersion:
 		return "GameVersion.SetGameVersion"
+	case service == gameVersionHash && method == gameUpdateRequired:
+		return "GameVersion.GameUpdateRequired"
 	}
 	return ""
 }
@@ -182,6 +184,7 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 			return false
 		}
 		sessionID := hex.EncodeToString(id)
+		s.subject = authSessionSubject(h.body)
 		body = authSessionResponseBody(sessionID)
 		s.send(d2rResponse(h, body))
 		log.Printf("D2RSVC %s: answered AuthSession token %d (%d-byte body)", s.remote, h.token, len(body))
@@ -200,5 +203,8 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 	}
 	s.send(d2rResponse(h, body))
 	log.Printf("D2RSVC %s: answered %s token %d (%d-byte body)", s.remote, name, h.token, len(body))
+	if h.service == gameVersionHash && h.method == gameSetGameVersion {
+		maybePushGameUpdate(s)
+	}
 	return true
 }

@@ -55,6 +55,8 @@ private notes.
 | `BATTLENET_D2R_SERVICES_URL` | LoginResponse field 1, the D2R-services WebSocket base the title dials when going online (default `wss://us.actual.battle.net:1119`; served on the gateway listener at `/OSI/v2/rpc/client`) |
 | `BATTLENET_LOGIN_RESPONSE_HEX` | Override check_token's LoginResponse (protobuf_response) with these bytes |
 | `BATTLENET_CHECK_TOKEN_RESULT` | check_token `result` as a raw JSON value (default `0`; the D2 layer reads it as a number) |
+| `NX_INTERNAL_URL`, `NX_INTERNAL_KEY` | nx-baas internal API (default `http://openpak-nx-baas:20070`) asked `/internal/title-version` at every gateway login; the verdict is logged as `VERSION ...`, and any failure means allowed |
+| `BATTLENET_GAME_UPDATE_PUSH` | Probe: after SetGameVersion, push GameVersion.GameUpdateRequired to a player whose login was outdated (off by default; what the title shows is untested, see `docs/d2r-protocol.md`) |
 | `BATTLENET_CHECK_TOKEN_TEMPLATE` | Full check_token JSON template with `${UID}`, overriding the built-in shape |
 
 ## Ground rules

@@ -5,6 +5,14 @@ of truth; this file is the readable summary.
 
 ## Unreleased
 
+- **Version check at login.** Every authenticated gateway login asks nx-baas
+  `/internal/title-version` with the id_token's `nintendo.ai`/`nintendo.av` (3 s timeout,
+  `NX_INTERNAL_URL`/`NX_INTERNAL_KEY`) and logs the verdict as a `VERSION` line. It fails open:
+  no answer, a non-200 or a token without `av` means allowed. Nothing is refused yet. The title
+  ignores LoginResponse field 4 (disassembly of both builds), so the LoginResponse bytes are
+  unchanged. The game's own path is the GameVersion.GameUpdateRequired push (method
+  0x01b1b8b2, GameUpdateRequest {1 string, 5 u64}). It is sent after SetGameVersion only when
+  `BATTLENET_GAME_UPDATE_PUSH` is set, until a run shows what the title does with it.
 - **Game-server transport.** After GameJoin the title dials field 1 on TCP 443 with its own
   OpenSSL and expects the Diablo II game server to speak first; the peer-hosted model was wrong.
   GameJoin now answers `1 = d2gs.battle.net` (`BATTLENET_GAME_HOST`), `3`/`4` = the game id, no

@@ -440,6 +440,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 				return false
 			}
 			s.subject = subject
+			go recordLoginVersion(s.remote, subject, idToken)
 			// The captured burst, in captured order: the method-12
 			// ConnectResponse, the status-OK for the client's request,
 			// then methods 13 and 5. Server request ids 2/3/4 are the
