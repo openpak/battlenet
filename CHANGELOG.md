@@ -3,7 +3,7 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
-## Unreleased
+## v0.2.0 — 2026-10-09
 
 - **Version check at login.** Every authenticated gateway login asks nx-baas
   `/internal/title-version` with the id_token's `nintendo.ai`/`nintendo.av` (3 s timeout,
