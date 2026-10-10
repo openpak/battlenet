@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"openpak/battlenet/redact"
 )
 
 // Version check for D2R logins. nx-baas owns the latest-version table and
@@ -113,18 +115,18 @@ func recordLoginVersion(remote, subject, idToken string) {
 	v, err := checkTitleVersion(context.Background(),
 		env("NX_INTERNAL_URL", "http://openpak-nx-baas:20070"), env("NX_INTERNAL_KEY", ""), idToken)
 	if err != nil {
-		log.Printf("VERSION %s subject %s: title=%q version=%q unchecked (%v); allowed", remote, subject, v.Title, v.Version, err)
+		log.Printf("VERSION %s subject %s: title=%q version=%q unchecked (%s); allowed", remote, redact.Tag(subject), v.Title, v.Version, redact.Err(err))
 		outdated.Delete(subject)
 		return
 	}
 	if !v.UpdateRequired {
-		log.Printf("VERSION %s subject %s: title=%s version=%s latest=%q current; allowed", remote, subject, v.Title, v.Version, v.Latest)
+		log.Printf("VERSION %s subject %s: title=%s version=%s latest=%q current; allowed", remote, redact.Tag(subject), v.Title, v.Version, v.Latest)
 		outdated.Delete(subject)
 		return
 	}
 	outdated.Store(subject, v)
 	log.Printf("VERSION %s subject %s: title=%s version=%s latest=%s update required; would refuse online (login answered as usual, push=%v)",
-		remote, subject, v.Title, v.Version, v.Latest, gameUpdatePushEnabled())
+		remote, redact.Tag(subject), v.Title, v.Version, v.Latest, gameUpdatePushEnabled())
 }
 
 func gameUpdatePushEnabled() bool { return env("BATTLENET_GAME_UPDATE_PUSH", "") != "" }

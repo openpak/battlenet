@@ -32,8 +32,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
+
+	"openpak/battlenet/redact"
 )
 
 func env(key, fallback string) string {
@@ -42,6 +45,10 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
+
+// traceBodies turns on logging of request/response bodies and frame hex, which
+// carry tokens, account ids and names. Off in production.
+var traceBodies = os.Getenv("BATTLENET_TRACE_BODIES") == "1"
 
 // upstream is the real login endpoint the relay forwards to.
 var upstream = "https://account.battle.net"
@@ -55,7 +62,7 @@ func relay(w http.ResponseWriter, r *http.Request, body []byte) {
 	// The body arrives from dump, which logs and rewinds it.
 	req, err := http.NewRequest(r.Method, upstream+r.URL.RequestURI(), bytes.NewReader(body))
 	if err != nil {
-		log.Printf("RELAY build error: %v", err)
+		log.Printf("RELAY build error: %s", redact.Err(err))
 		http.Error(w, "relay", http.StatusBadGateway)
 		return
 	}
@@ -69,19 +76,19 @@ func relay(w http.ResponseWriter, r *http.Request, body []byte) {
 	}
 	req.Host = "account.battle.net"
 
-	log.Printf("RELAY -> %s %s (%d bytes)", r.Method, r.URL.RequestURI(), len(body))
+	log.Printf("RELAY -> %s %s (%d bytes)", r.Method, r.URL.Path, len(body))
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("RELAY upstream error: %v", err)
+		log.Printf("RELAY upstream error: %s", redact.Err(err))
 		http.Error(w, "relay", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	log.Printf("RELAY <- %d (%d bytes) for %s", resp.StatusCode, len(respBody), r.URL.RequestURI())
-	if len(respBody) > 0 {
+	log.Printf("RELAY <- %d (%d bytes) for %s", resp.StatusCode, len(respBody), r.URL.Path)
+	if traceBodies && len(respBody) > 0 {
 		log.Printf("RELAY body: %s", respBody)
 	}
 
@@ -104,14 +111,19 @@ func relay(w http.ResponseWriter, r *http.Request, body []byte) {
 func dump(w http.ResponseWriter, r *http.Request, what string) []byte {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	log.Printf("%s %s %s from %s", what, r.Method, r.URL.String(), r.Header.Get("User-Agent"))
-	for k, v := range r.Header {
-		log.Printf("  %s: %s", k, strings.Join(v, ", "))
+	// Query strings, header values (Authorization, Cookie) and bodies carry
+	// tokens and account data: only their shape is logged.
+	log.Printf("%s %s %s from %s", what, r.Method, r.URL.Path, r.Header.Get("User-Agent"))
+	names := make([]string, 0, len(r.Header))
+	for k := range r.Header {
+		names = append(names, k)
 	}
-	if len(body) > 0 && what == "CHECK_TOKEN" {
-		log.Printf("  body: [redacted authentication payload, %d bytes]", len(body))
-	} else if len(body) > 0 {
+	sort.Strings(names)
+	log.Printf("  headers: %s", strings.Join(names, ", "))
+	if len(body) > 0 && traceBodies && what != "CHECK_TOKEN" {
 		log.Printf("  body (%d bytes): %s", len(body), body)
+	} else if len(body) > 0 {
+		log.Printf("  body: %d bytes, not logged", len(body))
 	}
 	return body
 }
@@ -132,7 +144,7 @@ func main() {
 	// subject; nothing else changes.
 	if subject := env("BATTLENET_IDENTITY_STUB", ""); subject != "" {
 		identities = stubIdentity{subject: subject}
-		log.Printf("identity stub active (subject %s)", subject)
+		log.Printf("identity stub active")
 	} else {
 		ident, err := newIdentityClient(context.Background(), env("ACCOUNT_GRPC_ADDR", "openpak-account:20001"), os.Getenv("ACCOUNT_INTERNAL_KEY"))
 		if err != nil {
@@ -223,14 +235,14 @@ func main() {
 
 			subject, err := identities.resolve(r.Context(), req.Token)
 			if err != nil {
-				log.Printf("CHECK_TOKEN rejected: %v", err)
+				log.Printf("CHECK_TOKEN rejected: %s", redact.Err(err))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"result":"INVALID_TOKEN","error_message":"INVALID_AUTHENTICATION_TOKEN"}`))
 				return
 			}
 
-			log.Printf("CHECK_TOKEN issued session for battlenet subject %s", subject)
+			log.Printf("CHECK_TOKEN issued session for battlenet subject %s", redact.Tag(subject))
 
 			// The D2 layer reads "result", "country_alpha2", then
 			// "client_response" — the LoginResponse TYPE NAME — and parses
@@ -364,12 +376,16 @@ func serveGateway(c net.Conn) {
 				return
 			case frame := <-ses.out:
 				if sinkTrace {
-					log.Printf("SINKTX %s: %x", remote, frame)
+					if traceBodies {
+						log.Printf("SINKTX %s: %x", remote, frame)
+					} else {
+						log.Printf("SINKTX %s: %d bytes", remote, len(frame))
+					}
 				}
 				// frame is the bnet RPC packet; the WebSocket envelope goes on
 				// here, at the single point every native write funnels through.
 				if _, err := c.Write(encodeWSFrame(2, frame)); err != nil {
-					log.Printf("GATEWAY %s write: %v", ses.remote, err)
+					log.Printf("GATEWAY %s write: %s", ses.remote, redact.Err(err))
 					return
 				}
 			}
@@ -385,7 +401,7 @@ func serveGateway(c net.Conn) {
 	for !bytes.Contains(request, []byte("\r\n\r\n")) {
 		n, err := c.Read(buf)
 		if err != nil {
-			log.Printf("GATEWAY %s closed during upgrade: %v", remote, err)
+			log.Printf("GATEWAY %s closed during upgrade: %s", remote, redact.Err(err))
 			return
 		}
 		request = append(request, buf[:n]...)
@@ -394,7 +410,8 @@ func serveGateway(c net.Conn) {
 			return
 		}
 	}
-	log.Printf("GATEWAY upgrade request:\n%s", request)
+	// Only the request line: the headers can carry cookies and tokens.
+	log.Printf("GATEWAY %s upgrade request: %s", remote, bytes.SplitN(request, []byte("\r\n"), 2)[0])
 
 	key := websocketAcceptKey(request)
 	if key == "" {
@@ -437,10 +454,10 @@ func serveGateway(c net.Conn) {
 		n, err := c.Read(buf)
 		if n > 0 {
 			if sinkTrace {
-				if bytes.Contains(buf[:n], []byte("eyJ")) {
-					log.Printf("SINKRX %s: [redacted authentication frame, %d bytes]", remote, n)
-				} else {
+				if traceBodies && !bytes.Contains(buf[:n], []byte("eyJ")) {
 					log.Printf("SINKRX %s: %x", remote, buf[:n])
+				} else {
+					log.Printf("SINKRX %s: %d bytes, not logged", remote, n)
 				}
 			}
 			pending = append(pending, buf[:n]...)
@@ -466,10 +483,10 @@ func serveGateway(c net.Conn) {
 						}
 						continue
 					}
-					if bytes.Contains(frame.payload, []byte("eyJ")) {
-						log.Printf("GATEWAY rpc in (%d bytes): [authentication payload redacted]", len(frame.payload))
-					} else {
+					if traceBodies && !bytes.Contains(frame.payload, []byte("eyJ")) {
 						log.Printf("GATEWAY rpc in (%d bytes): %x", len(frame.payload), frame.payload)
+					} else {
+						log.Printf("GATEWAY rpc in (%d bytes): not logged", len(frame.payload))
 					}
 					h := parseRPCHeader(frame.payload)
 					log.Printf("GATEWAY rpc header: service=%d method=%d request=%d",
@@ -649,12 +666,12 @@ func dialRealGateway(addr string) (net.Conn, error) {
 	}
 	if !bytes.Contains(head, []byte("101")) {
 		conn.Close()
-		return nil, fmt.Errorf("relay upgrade rejected: %q", head)
+		return nil, fmt.Errorf("relay upgrade rejected: %q", bytes.SplitN(head, []byte("\r\n"), 2)[0])
 	}
 	// The upstream's response headers are evidence: anything the real
 	// gateway sets beyond the 101 basics is something a native handshake
 	// may have to reproduce.
-	log.Printf("RELAY upstream upgrade response:\n%s", head)
+	log.Printf("RELAY upstream upgrade response: %s", bytes.SplitN(head, []byte("\r\n"), 2)[0])
 
 	conn.SetDeadline(time.Time{})
 	return conn, nil
@@ -677,13 +694,16 @@ func pumpFrames(src, dst net.Conn, label string) {
 				pending = pending[used:]
 				if f.opcode == 2 {
 					h := parseRPCHeader(f.payload)
-					log.Printf("RELAY %s rpc service=%d method=%d request=%d (%d bytes): %x",
-						label, h.serviceID, h.methodID, h.requestID, len(f.payload), f.payload)
+					log.Printf("RELAY %s rpc service=%d method=%d request=%d (%d bytes)",
+						label, h.serviceID, h.methodID, h.requestID, len(f.payload))
+					if traceBodies {
+						log.Printf("RELAY %s rpc body: %x", label, f.payload)
+					}
 				} else if f.opcode != 10 { // pongs are noise; pings and closes are evidence
 					log.Printf("RELAY %s frame opcode=%d len=%d", label, f.opcode, len(f.payload))
 				}
 				if _, werr := dst.Write(encodeWSFrame(f.opcode, f.payload)); werr != nil {
-					log.Printf("RELAY %s write: %v", label, werr)
+					log.Printf("RELAY %s write: %s", label, redact.Err(werr))
 					return
 				}
 				if f.opcode == 8 {
@@ -692,7 +712,7 @@ func pumpFrames(src, dst net.Conn, label string) {
 			}
 		}
 		if err != nil {
-			log.Printf("RELAY %s ended: %v", label, err)
+			log.Printf("RELAY %s ended: %s", label, redact.Err(err))
 			return
 		}
 	}

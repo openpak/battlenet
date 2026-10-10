@@ -208,14 +208,14 @@ func pushSessionState(s *gatewaySession, sessionID string) {
 func handleD2RServices(s *gatewaySession, payload []byte) bool {
 	h, ok := parseD2RHeader(payload)
 	if !ok {
-		log.Printf("D2RSVC %s: unparsable frame %x", s.remote, payload)
+		log.Printf("D2RSVC %s: unparsable frame (%d bytes)", s.remote, len(payload))
 		return true
 	}
 	name := d2rMethodName(h.service, h.method)
 	if name == "" {
 		name = "unknown"
 	}
-	if d2rBodyLoggable(h.service, h.method) {
+	if traceBodies && d2rBodyLoggable(h.service, h.method) {
 		log.Printf("D2RSVC %s rpc %s service=%#08x method=%#08x token=%d body=%x",
 			s.remote, name, h.service, h.method, h.token, h.body)
 	} else {

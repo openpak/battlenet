@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"openpak/battlenet/redact"
 )
 
 const (
@@ -605,8 +607,8 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 	case gameDetail:
 		name := gameDetailName(h.body)
 		body, t := gameDetailBody(name)
-		log.Printf("D2RSVC %s: GameDetail %q -> %d bytes  f2=%q f5=%q f3=%d f4=%d f6=%d f7=%d f8=%d players=%d",
-			s.remote, name, len(body), t.Field2, t.Field5, t.Field3, t.Field4, t.Field6, t.Field7, t.Field8, t.Players)
+		log.Printf("D2RSVC %s: GameDetail %s -> %d bytes  f3=%d f4=%d f6=%d f7=%d f8=%d players=%d",
+			s.remote, redact.Tag(name), len(body), t.Field3, t.Field4, t.Field6, t.Field7, t.Field8, t.Players)
 		return body, true
 	case gameCreate:
 		t := loadGameDetailTune()
@@ -622,12 +624,12 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		}
 		rec, ok := createGameRecord(s.remote, s.subject, s.gameVersion, req)
 		if !ok {
-			log.Printf("D2RSVC %s: GameCreate %q refused: another account's game has that name", s.remote, req.Key)
+			log.Printf("D2RSVC %s: GameCreate %s refused: another account's game has that name", s.remote, redact.Tag(req.Key))
 			return nil, false
 		}
 		body := gameCreateBody(rec.ID)
-		log.Printf("D2RSVC %s: GameCreate %q -> id=%d host=%s port=%d max=%d private=%v (%d-byte body)",
-			s.remote, req.Key, rec.ID, rec.Host, rec.Port, rec.MaxPlayers, rec.Password != "", len(body))
+		log.Printf("D2RSVC %s: GameCreate %s -> id=%d host=%s port=%d max=%d private=%v (%d-byte body)",
+			s.remote, redact.Tag(req.Key), rec.ID, rec.Host, rec.Port, rec.MaxPlayers, rec.Password != "", len(body))
 		return body, true
 	case gameJoin:
 		t := loadGameDetailTune()
@@ -643,15 +645,15 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		}
 		rec, ok := lookupGame(req.Key)
 		if !ok {
-			log.Printf("D2RSVC %s: GameJoin %q -> unknown game", s.remote, req.Key)
+			log.Printf("D2RSVC %s: GameJoin %s -> unknown game", s.remote, redact.Tag(req.Key))
 			return nil, false
 		}
 		if !checkGamePassword(rec, req.Password) {
-			log.Printf("D2RSVC %s: GameJoin %q -> password mismatch", s.remote, req.Key)
+			log.Printf("D2RSVC %s: GameJoin %s -> password mismatch", s.remote, redact.Tag(req.Key))
 			return nil, false
 		}
 		if gameIsFull(rec, s.subject) {
-			log.Printf("D2RSVC %s: GameJoin %q -> full (%d players)", s.remote, req.Key, rec.MaxPlayers)
+			log.Printf("D2RSVC %s: GameJoin %s -> full (%d players)", s.remote, redact.Tag(req.Key), rec.MaxPlayers)
 			return nil, false
 		}
 		body := gameJoinBody(rec.Host, rec.ID)
@@ -659,8 +661,8 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		if c, ok := findCharacter(s.subject, req.CharacterID); ok {
 			stampGameCharacter(rec, s.subject, c.Flags)
 		}
-		log.Printf("D2RSVC %s: GameJoin %q -> host=%s port=%d id=%d (%d-byte body)",
-			s.remote, req.Key, rec.Host, rec.Port, rec.ID, len(body))
+		log.Printf("D2RSVC %s: GameJoin %s -> host=%s port=%d id=%d (%d-byte body)",
+			s.remote, redact.Tag(req.Key), rec.Host, rec.Port, rec.ID, len(body))
 		return body, true
 	case gameListAll:
 		f := parseGameListRequest(h.body)

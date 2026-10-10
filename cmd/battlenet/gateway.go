@@ -43,6 +43,8 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"openpak/battlenet/redact"
 )
 
 // Captured constants (research-2026-09-13.md, 2026-09-14 relay sessions).
@@ -140,14 +142,14 @@ func newGatewaySession(remote string) *gatewaySession {
 	a := binary.BigEndian.Uint32(raw[:])
 	c := sessionIDCounter.Add(1)
 	s := &gatewaySession{
-		remote: remote,
+		remote: redact.Tag(remote), // addresses never reach the log
 		a:      a,
 		c:      c,
 		sid:    fmt.Sprintf("%08X%08X-%016X", a, gatewayInstance, c),
 		out:    make(chan []byte, 16),
 		done:   make(chan struct{}),
 	}
-	log.Printf("GATEWAY %s: session %s", remote, s.sid)
+	log.Printf("GATEWAY %s: session opened", s.remote)
 	return s
 }
 
@@ -445,7 +447,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 			if err != nil {
 				// The failure shape for an authenticated Connect is not
 				// captured; closing is the one answer that cannot be wrong.
-				log.Printf("GATEWAY %s: identity rejected: %v", s.remote, err)
+				log.Printf("GATEWAY %s: identity rejected: %s", s.remote, redact.Err(err))
 				return false
 			}
 			s.subject = subject
@@ -575,7 +577,7 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 					log.Printf("GATEWAY %s: close sent (relay-matched flow complete)", s.remote)
 				})
 			})
-			log.Printf("GATEWAY %s: authenticated connect answered for battlenet subject %s", s.remote, subject)
+			log.Printf("GATEWAY %s: authenticated connect answered for battlenet subject %s", s.remote, redact.Tag(subject))
 			return true
 		}
 		// KeepAlive (method 5) is NO_RESPONSE in bnet.protocol and the
@@ -587,8 +589,11 @@ func handleNativeRPC(s *gatewaySession, payload []byte) bool {
 		// Capture whole — this is the logon evidence the next stage needs —
 		// and leave unanswered, since the correct response shape is exactly
 		// what the capture is for.
-		log.Printf("GATEWAY %s authenticated rpc: service=%d method=%d request=%d payload=%x",
-			s.remote, h.serviceID, h.methodID, h.requestID, payload)
+		log.Printf("GATEWAY %s authenticated rpc: service=%d method=%d request=%d (%d bytes)",
+			s.remote, h.serviceID, h.methodID, h.requestID, len(payload))
+		if traceBodies {
+			log.Printf("GATEWAY %s authenticated rpc body: %x", s.remote, payload)
+		}
 		// BATTLENET_METHOD7_ECHO: the title's method-7 request (payload
 		// {1: 0}) lands right after the authenticated burst and sits
 		// unanswered — an outstanding RPC the SDK may block on. Echo a

@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"openpak/battlenet/redact"
 )
 
 // The Diablo II game-server transport. After GameJoin the title dials field 1 on
@@ -52,7 +54,7 @@ func gameServer(addr string) {
 // serveGame walks one connection through the handshake and the join burst.
 func serveGame(conn net.Conn) {
 	defer conn.Close()
-	remote := conn.RemoteAddr().String()
+	remote := redact.Tag(conn.RemoteAddr().String())
 	log.Printf("D2GS %s connected", remote)
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 
@@ -109,7 +111,10 @@ func serveGame(conn net.Conn) {
 			// Unknown id: log it with what follows and drop the buffered bytes
 			// rather than the connection; the stream resyncs at the next read.
 			rest, _ := r.Peek(r.Buffered())
-			log.Printf("D2GS %s: unknown packet %#x, %d bytes buffered after it: %x", remote, id, len(rest), rest)
+			log.Printf("D2GS %s: unknown packet %#x, %d bytes buffered after it", remote, id, len(rest))
+			if traceBodies {
+				log.Printf("D2GS %s: unknown packet rest: %x", remote, rest)
+			}
 			r.Discard(len(rest))
 			continue
 		}
@@ -151,7 +156,11 @@ func serveGame(conn net.Conn) {
 			log.Printf("D2GS %s: closed dialog with npc %d", remote, binary.LittleEndian.Uint32(pkt[1:5]))
 		case 0x42, 0x6F, 0x01, 0x03:
 		default:
-			log.Printf("D2GS %s: client packet %#x %x", remote, id, pkt[1:])
+			if traceBodies {
+				log.Printf("D2GS %s: client packet %#x %x", remote, id, pkt[1:])
+			} else {
+				log.Printf("D2GS %s: client packet %#x (%d bytes)", remote, id, len(pkt)-1)
+			}
 		}
 	}
 }

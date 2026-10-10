@@ -3,6 +3,16 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.3.2 — 2026-10-10
+
+- **No personal data in logs.** Battlenet subjects, game names and session addresses appear
+  only as short per-process tags (`redact.Tag`, keyed HMAC with a key random per start). The
+  web tier logs paths, header names and body sizes, not query strings, header values or
+  bodies; frame and packet hex, relay bodies and RPC bodies are off unless
+  `BATTLENET_TRACE_BODIES=1` (local debugging only). Net and URL errors are logged without
+  their addresses and URLs. `TestLogsCarryNoPersonalData` fails if a known id, token, name
+  or address reaches the log.
+
 ## v0.3.1 — 2026-10-10
 
 - **The Game List actually lists.** The client reads only GameListResponse field 3; v0.3.0 sent
