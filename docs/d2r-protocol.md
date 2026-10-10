@@ -799,9 +799,24 @@ printed every GameManagement and Character call as `unknown` because only the co
 GameVersion methods were named, which is why the sweep could not tell it apart from the
 unnamed 0x0b62a8a1/0x4b1c3b85 heartbeat (still unnamed, still answered empty).
 
-Still to settle with one capture: answer a list `{1:1, 2:8, 3:"probe", 4:1, 5:"desc"}` and look
-at the row (pins 4 and 5); the `GameList request f1=… f2=… f3=…` log line names the request
-fields once a player filters the list.
+**CORRECTION 2026-10-10 (v0.3.1): the table above names the wrong messages for the Game List
+screen.** Read from the screen itself (request builder 0x817aec/0x816900, row builder 0xb3f534
+on the update build; decompiles in `private scratch`), the client reads only
+GameListResponse **field 3**, so v0.3.0's field-1 rows were dropped and the list stayed empty.
+
+| Message | Fields the screen uses |
+|---|---|
+| GameListResponse | 3 repeated GameListInfo |
+| GameListInfo | 2 uint32 current players; 3 uint32 max players (row hidden if max <= current or max 0); 6 string name (shown, and the GameDetail/GameJoin key); 8 string site (looked up in request field 9 for the ping icon; no match = best bucket, not hidden); 9 uint32 difficulty 0-2; 13 bool desecrated. 1, 4, 7, 10-12 only feed a change hash; 5 is ignored |
+| GameListRequest | 3 string name search; 4 uint32 viewer's character flags (hardcore 0x4, ladder 0x40); 6 string preferred site; 7 and 10 uint32 difficulty bitmasks (bit 0 normal, 1 nightmare, 2 hell); 9 repeated GameSiteLatency {1 string site, 2 uint32 latency}; 11 bool desecrated filter (absent all, true only, false none); 12 uint32 game type (1 classic, 2 expansion) |
+
+The client also hides names with 7+ ASCII digits unless they start with `_` (and parses `_%di%d`
+names as "<label> | %d"), rows over its ping filter, its local hidden list, and rows past 40.
+The server applies the request's filters (difficulty masks intersected, a zero result filters
+nothing; hardcore/ladder and game type against the owner's character flags, stamped when the
+owner GameJoins its own game; desecrated; case-insensitive name search), caps at 40, never lists
+password games and keeps versions apart. Field 8 echoes the viewer's field 6 (else its first
+field-9 site). OpenPak games are never desecrated: no GameCreate field is known to carry it.
 
 Accounts: the D2R-services socket carries no identity of its own, and every console arrives
 from Traefik's address. Its only link to the bgs logon is LoginResponse field 2, echoed in

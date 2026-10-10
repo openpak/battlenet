@@ -102,6 +102,16 @@ type gameRecord struct {
 	Seated     map[string]int
 	EverSeated bool
 	Players    int // seat count in a listedGames snapshot; unused on live records
+
+	// CharFlags are the owner's character flags (hardcore 0x4, expansion
+	// 0x20, ladder 0x40), stamped when the owner GameJoins its own game with
+	// that character; CharKnown is false until then and the Game List's
+	// hardcore/ladder/game-type filters pass the game.
+	CharFlags uint64
+	CharKnown bool
+	// Desecrated is GameListInfo field 13. No GameCreate field is known to
+	// carry it, so OpenPak games are never desecrated.
+	Desecrated bool
 }
 
 // staleGameAfter drops a game nobody ever reached the game server for (the
@@ -646,93 +656,247 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 		}
 		body := gameJoinBody(rec.Host, rec.ID)
 		rememberPendingJoin(s.subject, req.CharacterID, rec.ID)
+		if c, ok := findCharacter(s.subject, req.CharacterID); ok {
+			stampGameCharacter(rec, s.subject, c.Flags)
+		}
 		log.Printf("D2RSVC %s: GameJoin %q -> host=%s port=%d id=%d (%d-byte body)",
 			s.remote, req.Key, rec.Host, rec.Port, rec.ID, len(body))
 		return body, true
 	case gameListAll:
-		games := listedGames(s.gameVersion)
-		body := gameListBody(games)
-		textLen, f2, f3 := gameListRequestFields(h.body)
-		log.Printf("D2RSVC %s: GameList request f1=[%d-char string] f2=%d f3=%d -> %d game(s), %d-byte body",
-			s.remote, textLen, f2, f3, len(games), len(body))
+		f := parseGameListRequest(h.body)
+		games := filterGameList(listedGames(s.gameVersion), f)
+		body := gameListBody(games, f.site())
+		log.Printf("D2RSVC %s: GameList request %s -> %d game(s), %d-byte body",
+			s.remote, f, len(games), len(body))
 		return body, true
 	}
 	return nil, false
 }
 
-// GameList (GameManagement 0xa5ea9f6d). Layouts recovered 2026-10-10 from the
-// LIVE update build (DB0507F3...), each from both the parser and the
-// serializer/ByteSizeLong, so number and proto type are certain:
+// GameList (GameManagement 0xa5ea9f6d), recovered 2026-10-10 from the live
+// update build's list screen (decompiles in
+// private scratch: the request builder at 0x817aec/0x816900
+// and the row builder at 0xb3f534). CORRECTION to the first reading of the
+// message classes: the client reads ONLY GameListResponse field 3, so a list
+// sent as field 1 is dropped and the screen says "No games found".
 //
-//	GameListRequest  (vtable 0x1ee2648, parse 0x1702460, serialize 0x1702670):
-//	  1 string, 2 uint32, 3 uint32. Meanings NOT traced (likely search text,
-//	  difficulty, game-type/desecrated filter), so nothing filters on them;
-//	  the handler logs them so one live request names them.
-//	GameListResponse (vtable 0x1ee2720, parse 0x1702c68, serialize 0x1702d84):
-//	  1 repeated GameListInfo, nothing else.
-//	GameListInfo     (vtable 0x1ee2570, merge 0x1701cc8, parse 0x1701ee8,
-//	  serialize 0x1702138, ByteSizeLong 0x17022c8):
-//	  1 uint32 current players, 2 uint32 max players (shown "cur/max"),
-//	  3 string game name -- displayed AND the key the client passes on to
-//	  GameJoin/GameDetail, 4 uint32 difficulty (medium confidence),
-//	  5 string description (medium), 6 and 7 uint32 unknown.
+//	GameListResponse: 3 repeated GameListInfo.
+//	GameListInfo:     2 uint32 current players, 3 uint32 max players (a row
+//	  with max <= current, or max 0, is hidden), 6 string game name (shown,
+//	  and the key GameDetail/GameJoin carry), 8 string site (looked up in the
+//	  request's field-9 latencies for the ping icon; no match = best bucket,
+//	  not hidden), 9 uint32 difficulty 0-2, 13 bool desecrated. 1, 4, 7, 10,
+//	  11 and 12 only feed a change hash; 5 is ignored by this build.
+//	GameListRequest:  3 string name search, 4 uint32 the viewer's character
+//	  flags (hardcore 0x4, ladder 0x40), 6 string preferred site, 7 and 10
+//	  uint32 difficulty bitmasks (bit 0 normal, 1 nightmare, 2 hell; the
+//	  builder ORs them from the character's progression and the ticked
+//	  boxes), 9 repeated GameSiteLatency {1 string site, 2 uint32 latency},
+//	  11 bool desecrated filter (absent: all; true: only desecrated; false:
+//	  none desecrated), 12 uint32 game type (1 classic, 2 expansion).
 //
-// Only 1-4 are sent: 5 has no source (no GameCreate field is pinned as a
-// description) and 6/7 have no known meaning. The client lists every element
-// it gets and only greys full ones, so fullness, passwords and versions are
-// filtered here (listedGames). Settle 4/5 with one capture: answer a list of
-// {1:1, 2:8, 3:"probe", 4:1, 5:"desc"} and look at the row.
-func gameListBody(games []gameRecord) []byte {
+// Client-side the list also drops names with 7+ ASCII digits unless they
+// start with '_', rows over its ping filter, the local hidden list and rows
+// past 40; the server caps at 40 too so the newest are not the ones lost.
+const gameListMax = 40
+
+// gameListFilter is a parsed GameListRequest.
+type gameListFilter struct {
+	Name       string
+	CharFlags  uint64
+	HasFlags   bool
+	Site       string
+	Diff7      uint64
+	Has7       bool
+	Diff10     uint64
+	Has10      bool
+	Sites      []string
+	Desecrated *bool
+	GameType   uint64
+}
+
+// site is the one GameListInfo field 8 carries: the viewer's preferred site,
+// else the first one it measured. Echoing the viewer's own site is honest
+// (every OpenPak game runs on one box) and lands in its best ping bucket.
+func (f gameListFilter) site() string {
+	if f.Site != "" {
+		return f.Site
+	}
+	if len(f.Sites) > 0 {
+		return f.Sites[0]
+	}
+	return ""
+}
+
+// difficultyMask is the set of difficulties the viewer accepts. Zero (no
+// field, or masks that share no bit) filters nothing: a misread request must
+// not empty the list.
+func (f gameListFilter) difficultyMask() uint64 {
+	mask := uint64(7)
+	if f.Has7 {
+		mask &= f.Diff7
+	}
+	if f.Has10 {
+		mask &= f.Diff10
+	}
+	if mask == 0 {
+		return 7
+	}
+	return mask
+}
+
+// String is the log form: no search text, only its length.
+func (f gameListFilter) String() string {
+	d := "-"
+	if f.Desecrated != nil {
+		d = strconv.FormatBool(*f.Desecrated)
+	}
+	return "search=" + strconv.Itoa(len(f.Name)) + "ch charflags=" + strconv.FormatUint(f.CharFlags, 16) +
+		" diff7=" + strconv.FormatUint(f.Diff7, 10) + " diff10=" + strconv.FormatUint(f.Diff10, 10) +
+		" desecrated=" + d + " type=" + strconv.FormatUint(f.GameType, 10) + " sites=" + strconv.Itoa(len(f.Sites))
+}
+
+func parseGameListRequest(body []byte) gameListFilter {
+	var f gameListFilter
+	for len(body) > 0 {
+		num, typ, n := protowire.ConsumeTag(body)
+		if n < 0 {
+			return f
+		}
+		body = body[n:]
+		if typ == protowire.VarintType {
+			v, m := protowire.ConsumeVarint(body)
+			if m < 0 {
+				return f
+			}
+			body = body[m:]
+			switch num {
+			case 4:
+				f.CharFlags, f.HasFlags = v, true
+			case 7:
+				f.Diff7, f.Has7 = v, true
+			case 10:
+				f.Diff10, f.Has10 = v, true
+			case 11:
+				b := v != 0
+				f.Desecrated = &b
+			case 12:
+				f.GameType = v
+			}
+			continue
+		}
+		if typ == protowire.BytesType {
+			v, m := protowire.ConsumeBytes(body)
+			if m < 0 {
+				return f
+			}
+			body = body[m:]
+			switch num {
+			case 3:
+				f.Name = string(v)
+			case 6:
+				f.Site = string(v)
+			case 9:
+				if site := gameSiteLatencySite(v); site != "" {
+					f.Sites = append(f.Sites, site)
+				}
+			}
+			continue
+		}
+		m := protowire.ConsumeFieldValue(num, typ, body)
+		if m < 0 {
+			return f
+		}
+		body = body[m:]
+	}
+	return f
+}
+
+// gameSiteLatencySite reads GameSiteLatency field 1.
+func gameSiteLatencySite(b []byte) string {
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return ""
+		}
+		b = b[n:]
+		if num == 1 && typ == protowire.BytesType {
+			v, _ := protowire.ConsumeBytes(b)
+			return string(v)
+		}
+		m := protowire.ConsumeFieldValue(num, typ, b)
+		if m < 0 {
+			return ""
+		}
+		b = b[m:]
+	}
+	return ""
+}
+
+// filterGameList applies the viewer's request filters to listedGames'
+// snapshot (which already dropped full, password and other-version games).
+func filterGameList(games []gameRecord, f gameListFilter) []gameRecord {
+	mask := f.difficultyMask()
+	search := strings.ToLower(f.Name)
+	var out []gameRecord
+	for _, g := range games {
+		if g.Difficulty > 2 || mask&(1<<g.Difficulty) == 0 {
+			continue
+		}
+		if f.Desecrated != nil && g.Desecrated != *f.Desecrated {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(g.DisplayName), search) {
+			continue
+		}
+		if g.CharKnown {
+			if f.HasFlags && (g.CharFlags&0x44) != (f.CharFlags&0x44) {
+				continue // hardcore and ladder must match the viewer's character
+			}
+			if expansion := g.CharFlags&0x20 != 0; (f.GameType == 1 && expansion) || (f.GameType == 2 && !expansion) {
+				continue
+			}
+		}
+		out = append(out, g)
+		if len(out) == gameListMax {
+			break
+		}
+	}
+	return out
+}
+
+// stampGameCharacter records the owner's character flags on its game.
+func stampGameCharacter(rec *gameRecord, subject string, flags uint64) {
+	gameMu.Lock()
+	defer gameMu.Unlock()
+	if rec.Owner == subject {
+		rec.CharFlags, rec.CharKnown = flags, true
+	}
+}
+
+// gameListBody encodes GameListResponse for the listed games.
+func gameListBody(games []gameRecord, site string) []byte {
 	var out []byte
 	for _, g := range games {
 		players := uint64(g.Players)
 		if players == 0 {
 			players = 1 // created, the creator still on its way to the game server
 		}
-		info := pbVarint(1, players)
-		info = append(info, pbVarint(2, g.MaxPlayers)...)
-		info = append(info, pbBytes(3, []byte(g.DisplayName))...)
-		info = append(info, pbVarint(4, g.Difficulty)...)
-		out = append(out, pbBytes(1, info)...)
+		maxPlayers := g.MaxPlayers
+		if maxPlayers == 0 {
+			maxPlayers = 8 // 0 hides the row; the title's own default is 8
+		}
+		info := pbVarint(2, players)
+		info = append(info, pbVarint(3, maxPlayers)...)
+		info = append(info, pbBytes(6, []byte(g.DisplayName))...)
+		if site != "" {
+			info = append(info, pbBytes(8, []byte(site))...)
+		}
+		info = append(info, pbVarint(9, g.Difficulty)...)
+		if g.Desecrated {
+			info = append(info, pbVarint(13, 1)...)
+		}
+		out = append(out, pbBytes(3, info)...)
 	}
 	return out
-}
-
-// gameListRequestFields reads GameListRequest's two uint32 fields (2, 3) and
-// the length of its string (1), for the log: their meanings are untraced.
-func gameListRequestFields(body []byte) (textLen int, f2, f3 uint64) {
-	for len(body) > 0 {
-		num, typ, n := protowire.ConsumeTag(body)
-		if n < 0 {
-			return
-		}
-		body = body[n:]
-		switch {
-		case num == 1 && typ == protowire.BytesType:
-			v, m := protowire.ConsumeBytes(body)
-			if m < 0 {
-				return
-			}
-			textLen = len(v)
-			body = body[m:]
-		case (num == 2 || num == 3) && typ == protowire.VarintType:
-			v, m := protowire.ConsumeVarint(body)
-			if m < 0 {
-				return
-			}
-			if num == 2 {
-				f2 = v
-			} else {
-				f3 = v
-			}
-			body = body[m:]
-		default:
-			m := protowire.ConsumeFieldValue(num, typ, body)
-			if m < 0 {
-				return
-			}
-			body = body[m:]
-		}
-	}
-	return
 }

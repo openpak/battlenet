@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/binary"
 	"os"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,14 +217,22 @@ func TestPendingJoinsQueuePerAccount(t *testing.T) {
 }
 
 // gameList asks for the Game List the way the title does and returns the
-// listed names with their GameListInfo fields 1 (players) and 2 (max).
+// listed names with their GameListInfo fields 2 (players) and 3 (max).
 func gameList(t *testing.T, s *gatewaySession) map[string][2]uint64 {
 	t.Helper()
-	body := d2rCall(t, s, gameManagementHash, gameListAll, nil)
+	return gameListWith(t, s, nil)
+}
+
+func gameListWith(t *testing.T, s *gatewaySession, req []byte) map[string][2]uint64 {
+	t.Helper()
+	body := d2rCall(t, s, gameManagementHash, gameListAll, req)
+	if len(repeatedField(t, body, 1)) != 0 {
+		t.Fatal("GameListResponse carries field 1, which the client never reads")
+	}
 	out := map[string][2]uint64{}
-	for _, info := range repeatedField(t, body, 1) {
+	for _, info := range repeatedField(t, body, 3) {
 		v, d := decodeTestFields(t, info)
-		out[string(d[3])] = [2]uint64{v[1], v[2]}
+		out[string(d[6])] = [2]uint64{v[2], v[3]}
 	}
 	return out
 }
@@ -334,14 +344,83 @@ func TestAbandonedGameExpires(t *testing.T) {
 	}
 }
 
-// The response is exactly the recovered GameListResponse shape.
+// The response is exactly the recovered GameListResponse shape: the helper's
+// probe row 1a{10:1,18:8,32:"probe",48:1,68:1}.
 func TestGameListBodyShape(t *testing.T) {
-	body := gameListBody([]gameRecord{{DisplayName: "g1", MaxPlayers: 8, Players: 2, Difficulty: 1}})
-	want := pbBytes(1, append(append(append(pbVarint(1, 2), pbVarint(2, 8)...), pbBytes(3, []byte("g1"))...), pbVarint(4, 1)...))
+	body := gameListBody([]gameRecord{{DisplayName: "probe", MaxPlayers: 8, Players: 1, Difficulty: 1, Desecrated: true}}, "")
+	want := []byte{0x1a, 0x0f, 0x10, 0x01, 0x18, 0x08, 0x32, 0x05, 'p', 'r', 'o', 'b', 'e', 0x48, 0x01, 0x68, 0x01}
 	if string(body) != string(want) {
 		t.Fatalf("GameListResponse\n got %x\nwant %x", body, want)
 	}
-	if len(gameListBody(nil)) != 0 {
+	if len(gameListBody(nil, "")) != 0 {
 		t.Fatal("an empty list must be an empty body")
+	}
+	// The viewer's site goes back in field 8 (its best ping bucket), and a
+	// game with no max still gets one: max 0 hides the row.
+	v, d := decodeTestFields(t, repeatedField(t, gameListBody([]gameRecord{{DisplayName: "g"}}, "us-east"), 3)[0])
+	if string(d[8]) != "us-east" || v[3] <= v[2] {
+		t.Fatalf("site=%q players=%d max=%d", d[8], v[2], v[3])
+	}
+}
+
+// The request's filters: difficulty masks, hardcore/ladder, game type,
+// desecrated, name search; the site echoes back.
+func TestGameListAppliesRequestFilters(t *testing.T) {
+	testGameEnv(t)
+	t.Setenv("BATTLENET_CHARACTER_STORE", t.TempDir()+"/characters.json")
+	resetCharacters()
+	host := signIn(t, "10.89.0.7:5000", d2rSessionToken("1001"))
+	joiner := signIn(t, "10.89.0.7:5001", d2rSessionToken("1002"))
+
+	mk := func(name string, difficulty, charFlags uint64) {
+		c, _ := addCharacter("1001", d2rCharacter{Name: "Hosta", Class: 4, Flags: charFlags})
+		req := append(append(pbBytes(2, []byte(name)), pbVarint(10, 8)...), pbVarint(14, difficulty)...)
+		v, _ := decodeTestFields(t, d2rCall(t, host, gameManagementHash, gameCreate, req))
+		join := append(pbVarint(1, c.ID), pbBytes(2, []byte(name))...)
+		d2rCall(t, host, gameManagementHash, gameJoin, join)
+		seatGame(uint32(v[5]), "1001")
+	}
+	mk("normalsc", 0, 0x20)   // expansion softcore non-ladder, normal
+	mk("hellhc", 2, 0x20|0x4) // expansion hardcore, hell
+	mk("classicsc", 1, 0)     // classic softcore, nightmare
+	mk("laddersc", 0, 0x20|0x40)
+
+	names := func(req []byte) []string {
+		var out []string
+		for n := range gameListWith(t, joiner, req) {
+			out = append(out, n)
+		}
+		sort.Strings(out)
+		return out
+	}
+	check := func(what string, req []byte, want ...string) {
+		t.Helper()
+		got := names(req)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: listed %v, want %v", what, got, want)
+		}
+	}
+	check("no filter", nil, "classicsc", "hellhc", "laddersc", "normalsc")
+	check("normal only", pbVarint(7, 1), "laddersc", "normalsc")
+	check("masks intersect", append(pbVarint(7, 7), pbVarint(10, 6)...), "classicsc", "hellhc")
+	check("softcore non-ladder expansion viewer", append(pbVarint(4, 0x20), pbVarint(12, 2)...), "normalsc")
+	check("hardcore viewer", pbVarint(4, 0x24), "hellhc")
+	check("classic", pbVarint(12, 1), "classicsc")
+	check("only desecrated", pbVarint(11, 1))
+	check("no desecrated", pbVarint(11, 0), "classicsc", "hellhc", "laddersc", "normalsc")
+	check("name search", pbBytes(3, []byte("SC")), "classicsc", "laddersc", "normalsc")
+
+	// The site comes back from the request: field 6, else the first field-9 entry.
+	site := func(req []byte) string {
+		body := d2rCall(t, joiner, gameManagementHash, gameListAll, req)
+		_, d := decodeTestFields(t, repeatedField(t, body, 3)[0])
+		return string(d[8])
+	}
+	lat := append(pbBytes(1, []byte("eu")), pbVarint(2, 30)...)
+	if got := site(pbBytes(9, lat)); got != "eu" {
+		t.Fatalf("site from the ping list = %q", got)
+	}
+	if got := site(append(pbBytes(6, []byte("us")), pbBytes(9, lat)...)); got != "us" {
+		t.Fatalf("preferred site = %q", got)
 	}
 }

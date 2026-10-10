@@ -3,6 +3,17 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.3.1 — 2026-10-10
+
+- **The Game List actually lists.** The client reads only GameListResponse field 3; v0.3.0 sent
+  its rows as field 1, so the screen still said "No games found". Rows are now GameListInfo
+  {2 players, 3 max, 6 name, 8 site, 9 difficulty, 13 desecrated}, recovered from the list screen
+  itself (docs/d2r-protocol.md, "CORRECTION 2026-10-10 (v0.3.1)").
+- **The request's filters are applied:** difficulty masks (fields 7 and 10), the viewer's
+  hardcore/ladder flags (4) and game type (12) against the owner's character, desecrated (11) and
+  name search (3); at most 40 rows. Field 8 echoes the viewer's preferred site so the row lands in
+  its best ping bucket. The log line names the filters, never the search text.
+
 ## v0.3.0 — 2026-10-10
 
 - **Characters belong to accounts.** The character roster was one list for the whole box, so a
