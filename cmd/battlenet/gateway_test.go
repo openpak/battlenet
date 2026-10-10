@@ -144,7 +144,7 @@ func TestLoggedOnRouting(t *testing.T) {
 	for _, want := range [][]byte{
 		mustHex("0a450a0f636c69656e745f726573706f6e7365"), // result{name "client_response"
 		pbBytes(1, []byte("wss://us.actual.battle.net:1119")),
-		pbBytes(2, []byte("openpak:4152366661")),
+		pbBytes(2, []byte(d2rSessionToken("4152366661"))),
 		pbBytes(4, loginResponse("4152366661")), // Variant.string_value, raw bytes
 	} {
 		if !bytes.Contains(login, want) {
@@ -200,7 +200,7 @@ func TestD2RAuthSessionAndPushes(t *testing.T) {
 	reqHeader := pbVarint(1, uint64(d2rServicesHash))
 	reqHeader = append(reqHeader, pbVarint(2, uint64(d2rAuthSession))...)
 	reqHeader = append(reqHeader, pbVarint(3, 7)...)
-	reqBody := pbBytes(1, []byte("openpak:1"))
+	reqBody := pbBytes(1, []byte(d2rSessionToken("1")))
 	packet := make([]byte, 2)
 	binary.BigEndian.PutUint16(packet, uint16(len(reqHeader)))
 	packet = append(packet, reqHeader...)

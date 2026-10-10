@@ -16,6 +16,16 @@ func testGameEnv(t *testing.T) {
 	resetGameRegistry()
 }
 
+// mustCreateGame records a game for a fixed test account.
+func mustCreateGame(t *testing.T, remote string, req gameCreateRequest) *gameRecord {
+	t.Helper()
+	rec, ok := createGameRecord(remote, "100", "", req)
+	if !ok {
+		t.Fatalf("create %q refused", req.Key)
+	}
+	return rec
+}
+
 func encodeGameCreate(key, password string) []byte {
 	out := pbBytes(2, []byte(key))
 	out = append(out, pbBytes(3, []byte(password))...)
@@ -52,7 +62,7 @@ func TestParseGameJoin(t *testing.T) {
 
 func TestGameIDAllocationAndLookup(t *testing.T) {
 	testGameEnv(t)
-	rec := createGameRecord("10.90.90.92:54321", parseGameCreate(encodeGameCreate("mygame", "")))
+	rec := mustCreateGame(t, "10.90.90.92:54321", parseGameCreate(encodeGameCreate("mygame", "")))
 	if rec.ID == 0 {
 		t.Fatal("allocated game ID must be nonzero")
 	}
@@ -67,8 +77,8 @@ func TestGameIDAllocationAndLookup(t *testing.T) {
 
 func TestTwoGamesGetDistinctIDs(t *testing.T) {
 	testGameEnv(t)
-	a := createGameRecord("10.0.0.1:1111", parseGameCreate(encodeGameCreate("gameone", "")))
-	b := createGameRecord("10.0.0.1:2222", parseGameCreate(encodeGameCreate("gametwo", "")))
+	a := mustCreateGame(t, "10.0.0.1:1111", parseGameCreate(encodeGameCreate("gameone", "")))
+	b := mustCreateGame(t, "10.0.0.1:2222", parseGameCreate(encodeGameCreate("gametwo", "")))
 	if a.ID == 0 || b.ID == 0 || a.ID == b.ID {
 		t.Fatalf("IDs not distinct: %d vs %d", a.ID, b.ID)
 	}
@@ -76,7 +86,7 @@ func TestTwoGamesGetDistinctIDs(t *testing.T) {
 
 func TestNormalizedNameLookup(t *testing.T) {
 	testGameEnv(t)
-	rec := createGameRecord("10.0.0.1:1111", parseGameCreate(encodeGameCreate("hansolo's game", "")))
+	rec := mustCreateGame(t, "10.0.0.1:1111", parseGameCreate(encodeGameCreate("hansolo's game", "")))
 	for _, variant := range []string{"Hansolo's Game", "HANSOLO'S GAME", "hansolo's game"} {
 		got, ok := lookupGame(variant)
 		if !ok || got.ID != rec.ID {
@@ -87,7 +97,7 @@ func TestNormalizedNameLookup(t *testing.T) {
 
 func TestPasswordAcceptanceAndRejection(t *testing.T) {
 	testGameEnv(t)
-	createGameRecord("10.0.0.1:1111", parseGameCreate(encodeGameCreate("locked", "abc123")))
+	mustCreateGame(t, "10.0.0.1:1111", parseGameCreate(encodeGameCreate("locked", "abc123")))
 	rec, ok := lookupGame("locked")
 	if !ok {
 		t.Fatal("game not found")
@@ -102,7 +112,7 @@ func TestPasswordAcceptanceAndRejection(t *testing.T) {
 		t.Fatal("empty password accepted for locked game")
 	}
 
-	createGameRecord("10.0.0.1:1111", parseGameCreate(encodeGameCreate("open", "")))
+	mustCreateGame(t, "10.0.0.1:1111", parseGameCreate(encodeGameCreate("open", "")))
 	open, ok := lookupGame("open")
 	if !ok || !checkGamePassword(open, "") || !checkGamePassword(open, "anything") {
 		t.Fatalf("open game should accept any password: %+v", open)
@@ -129,7 +139,7 @@ func TestGameMasterEndpointOverride(t *testing.T) {
 	if host != "203.0.113.7" || port != 6113 {
 		t.Fatalf("override endpoint = %s:%d", host, port)
 	}
-	rec := createGameRecord("10.0.0.1:9999", parseGameCreate(encodeGameCreate("natgame", "")))
+	rec := mustCreateGame(t, "10.0.0.1:9999", parseGameCreate(encodeGameCreate("natgame", "")))
 	if rec.Host != "203.0.113.7" || rec.Port != 6113 {
 		t.Fatalf("record did not use override: %+v", rec)
 	}
@@ -151,14 +161,14 @@ func TestGameJoinResponseFields(t *testing.T) {
 
 func TestDynamicCreateJoinFlow(t *testing.T) {
 	testGameEnv(t)
-	creator := &gatewaySession{remote: "10.90.90.92:51234"}
+	creator := &gatewaySession{remote: "10.90.90.92:51234", subject: "100"}
 	createBody, ok := handleGameRPC(creator, d2rHeader{
 		service: gameManagementHash, method: gameCreate, body: encodeGameCreate("hansolo's game", "abc123"),
 	})
 	if !ok || len(createBody) == 0 {
 		t.Fatal("dynamic GameCreate must answer when no raw-hex override exists")
 	}
-	joiner := &gatewaySession{remote: "10.90.90.93:60000"}
+	joiner := &gatewaySession{remote: "10.90.90.93:60000", subject: "200"}
 	joinBody, ok := handleGameRPC(joiner, d2rHeader{
 		service: gameManagementHash, method: gameJoin, body: encodeGameJoin("HANSOLO'S GAME", "abc123"),
 	})
@@ -196,7 +206,7 @@ func TestRawHexOverridePrecedence(t *testing.T) {
 	t.Setenv("BATTLENET_GAMEMASTER_PORT", "")
 	resetGameRegistry()
 
-	creator := &gatewaySession{remote: "10.0.0.1:1111"}
+	creator := &gatewaySession{remote: "10.0.0.1:1111", subject: "100"}
 	body, ok := handleGameRPC(creator, d2rHeader{
 		service: gameManagementHash, method: gameCreate, body: encodeGameCreate("any", ""),
 	})
@@ -219,12 +229,12 @@ func TestConcurrentCreateJoin(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := fmt.Sprintf("game-%d", i%4)
-			rec := createGameRecord("10.0.0.5:4000", parseGameCreate(encodeGameCreate(key, "")))
+			rec, _ := createGameRecord("10.0.0.5:4000", "100", "", parseGameCreate(encodeGameCreate(key, "")))
 			if _, ok := lookupGame(key); !ok {
 				t.Errorf("lookup %q failed", key)
 			}
 			_ = gameJoinBody(rec.Host, rec.ID)
-			_, _ = handleGameRPC(&gatewaySession{remote: "10.0.0.6:5000"}, d2rHeader{
+			_, _ = handleGameRPC(&gatewaySession{remote: "10.0.0.6:5000", subject: "200"}, d2rHeader{
 				service: gameManagementHash, method: gameJoin, body: encodeGameJoin(key, ""),
 			})
 		}(i)

@@ -137,8 +137,8 @@ func gameUpdateRequiredBody(v versionVerdict) []byte {
 	return pbBytes(1, []byte(msg))
 }
 
-// authSessionSubject reads AuthSessionRequest field 1 ("openpak:<subject>",
-// LoginResponse field 2 handed back).
+// authSessionSubject reads AuthSessionRequest field 1 (LoginResponse field 2
+// handed back) and returns the subject it proves, "" when it does not verify.
 func authSessionSubject(body []byte) string {
 	for len(body) > 0 {
 		num, typ, n := protowire.ConsumeTag(body)
@@ -151,7 +151,7 @@ func authSessionSubject(body []byte) string {
 			if k < 0 {
 				return ""
 			}
-			return strings.TrimPrefix(string(b), "openpak:")
+			return d2rTokenSubject(string(b))
 		}
 		k := protowire.ConsumeFieldValue(num, typ, body)
 		if k < 0 {

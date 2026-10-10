@@ -3,6 +3,33 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.3.0 — 2026-10-10
+
+- **Characters belong to accounts.** The character roster was one list for the whole box, so a
+  second account (two consoles behind one address, or two emulators on one PC, all arriving
+  through Traefik) saw, played and could delete the first account's characters. Rosters are now
+  keyed by the battlenet subject the D2R-services session proves in AuthSession; an account with
+  no characters gets an empty list. `characters.json` gains an `accounts` map. A v0.2.0 store's
+  shared roster is kept but served to nobody until `BATTLENET_CHARACTER_LEGACY_OWNER` names its
+  owner's battlenet subject (read once at startup, then written into that account's roster).
+- **Signed D2R-services token.** LoginResponse field 2 (echoed in AuthSession) was the bare
+  `openpak:<subject>`, so a client could claim any account. It is now
+  `openpak:<subject>.<mac>` (HMAC-SHA256; key `BATTLENET_SESSION_KEY`, else derived from
+  `ACCOUNT_INTERNAL_KEY`, else random per process). A token that does not verify gives the
+  session no account: empty roster, no create, no join. Clients log in again after the deploy.
+- **Game List.** GameManagement.GameList (0xa5ea9f6d) was answered empty ("No games found").
+  It now returns `GameListResponse {1 repeated GameListInfo {1 players, 2 max, 3 name, 4
+  difficulty}}`, layout recovered from the update build (docs/d2r-protocol.md). Listed: live
+  games with a free seat, no password, and the viewer's SetGameVersion. A game is seated by
+  its game-server connections, closes when the last one drops, and is dropped if nobody reaches
+  it within 2 minutes. GameJoin refuses full and closed games; GameCreate no longer lets another
+  account take over a live game's name.
+- **Game server.** Pending joins queue per account (oldest first, 30 s) instead of one box-wide
+  slot, and resolve the character on the joining account's own roster. The 2-minute connection
+  deadline is now an idle timeout; it used to end every game at the 2-minute mark.
+- **Logs.** D2RSVC names Character and GameManagement methods instead of `unknown`. AuthSession,
+  Character and GameCreate/GameJoin bodies, and character names, are no longer logged.
+
 ## v0.2.0 — 2026-10-09
 
 - **Version check at login.** Every authenticated gateway login asks nx-baas

@@ -27,13 +27,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -120,6 +125,10 @@ type gatewaySession struct {
 	c       uint64 // session id counter component (this connection's value)
 	out     chan []byte
 	done    chan struct{} // closed when the connection is over; timers watch it
+
+	// gameVersion is the D2R-services session's SetGameVersion string, used to
+	// list only games of the same version.
+	gameVersion string
 }
 
 func newGatewaySession(remote string) *gatewaySession {
@@ -679,7 +688,75 @@ func (s *gatewaySession) answerLoggedOn(h rpcHeader) bool {
 // (GameUpdateRequest) are ignored by the client.
 func loginResponse(subject string) []byte {
 	login := pbBytes(1, []byte(env("BATTLENET_D2R_SERVICES_URL", "wss://us.actual.battle.net:1119")))
-	return append(login, pbBytes(2, []byte("openpak:"+subject))...)
+	return append(login, pbBytes(2, []byte(d2rSessionToken(subject)))...)
+}
+
+// The D2R-services WebSocket is a second connection that carries no identity
+// of its own: the only link back to the authenticated bgs logon is the
+// LoginResponse field-2 token the title echoes in AuthSession. Until v0.2.0
+// that token was the bare "openpak:<subject>", so any client could claim any
+// account's roster by writing a different number. It is now
+// "openpak:<subject>.<mac>", the MAC an HMAC-SHA256 over the subject under a
+// server key, and a token that does not verify gives the session no account.
+// The title treats field 2 as opaque bytes (it only echoes it), so the longer
+// value changes nothing on its side.
+//
+// The key is BATTLENET_SESSION_KEY when set, else derived from
+// ACCOUNT_INTERNAL_KEY (the secret every production gateway already has, so a
+// token outlives a restart), else random per process (identity stub / local
+// runs: a restart then needs a fresh login).
+var (
+	sessionKeyOnce sync.Once
+	sessionKey     []byte
+)
+
+func d2rSessionKey() []byte {
+	sessionKeyOnce.Do(func() {
+		if k := os.Getenv("BATTLENET_SESSION_KEY"); k != "" {
+			sessionKey = []byte(k)
+			return
+		}
+		if k := os.Getenv("ACCOUNT_INTERNAL_KEY"); k != "" {
+			m := hmac.New(sha256.New, []byte(k))
+			m.Write([]byte("openpak battlenet d2r session token v1"))
+			sessionKey = m.Sum(nil)
+			return
+		}
+		sessionKey = make([]byte, 32)
+		if _, err := crand.Read(sessionKey); err != nil {
+			panic("battlenet: session key entropy: " + err.Error())
+		}
+	})
+	return sessionKey
+}
+
+func d2rSessionMAC(subject string) string {
+	m := hmac.New(sha256.New, d2rSessionKey())
+	m.Write([]byte(subject))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil)[:16])
+}
+
+// d2rSessionToken is the LoginResponse field-2 value for a subject.
+func d2rSessionToken(subject string) string {
+	return "openpak:" + subject + "." + d2rSessionMAC(subject)
+}
+
+// d2rTokenSubject verifies a token from AuthSession and returns its subject,
+// or "" when it is not one we issued.
+func d2rTokenSubject(token string) string {
+	rest, ok := strings.CutPrefix(token, "openpak:")
+	if !ok {
+		return ""
+	}
+	i := strings.LastIndexByte(rest, '.')
+	if i <= 0 {
+		return ""
+	}
+	subject, mac := rest[:i], rest[i+1:]
+	if !hmac.Equal([]byte(mac), []byte(d2rSessionMAC(subject))) {
+		return ""
+	}
+	return subject
 }
 
 // d2rLoginResponse wraps the LoginResponse in the ProcessTaskResponse

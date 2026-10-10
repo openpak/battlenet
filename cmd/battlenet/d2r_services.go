@@ -45,8 +45,49 @@ func d2rMethodName(service, method uint32) string {
 		return "GameVersion.SetGameVersion"
 	case service == gameVersionHash && method == gameUpdateRequired:
 		return "GameVersion.GameUpdateRequired"
+	case service == characterHash:
+		switch method {
+		case charCreate:
+			return "Character.CreateCharacter"
+		case charDelete:
+			return "Character.DeleteCharacter"
+		case charReadList:
+			return "Character.ReadCharacterList"
+		case charUse:
+			return "Character.UseCharacter"
+		}
+	case service == gameManagementHash:
+		switch method {
+		case gameCreate:
+			return "GameManagement.GameCreate"
+		case gameJoin:
+			return "GameManagement.GameJoin"
+		case gameListAll:
+			return "GameManagement.GameList"
+		case gameDetail:
+			return "GameManagement.GameDetail"
+		case gameCreateCan:
+			return "GameManagement.GameCreateCancel"
+		case gameGetSitePings:
+			return "GameManagement.GameGetSitePingList"
+		}
 	}
 	return ""
+}
+
+// d2rBodyLoggable reports whether a request body may be logged as hex. The
+// AuthSession token, character names and game passwords must not reach the
+// log; those requests log their length only.
+func d2rBodyLoggable(service, method uint32) bool {
+	switch {
+	case service == d2rServicesHash && method == d2rAuthSession:
+		return false
+	case service == characterHash:
+		return false
+	case service == gameManagementHash && (method == gameCreate || method == gameJoin):
+		return false
+	}
+	return true
 }
 
 type d2rHeader struct {
@@ -174,8 +215,13 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 	if name == "" {
 		name = "unknown"
 	}
-	log.Printf("D2RSVC %s rpc %s service=%#08x method=%#08x token=%d body=%x",
-		s.remote, name, h.service, h.method, h.token, h.body)
+	if d2rBodyLoggable(h.service, h.method) {
+		log.Printf("D2RSVC %s rpc %s service=%#08x method=%#08x token=%d body=%x",
+			s.remote, name, h.service, h.method, h.token, h.body)
+	} else {
+		log.Printf("D2RSVC %s rpc %s service=%#08x method=%#08x token=%d body=[%d bytes, not logged]",
+			s.remote, name, h.service, h.method, h.token, len(h.body))
+	}
 	var body []byte
 	if h.service == d2rServicesHash && h.method == d2rAuthSession {
 		id := make([]byte, 16)
@@ -185,11 +231,19 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 		}
 		sessionID := hex.EncodeToString(id)
 		s.subject = authSessionSubject(h.body)
+		if s.subject == "" {
+			// No account: the session stays up (the title tolerates it) but
+			// owns no characters and cannot create or join games.
+			log.Printf("D2RSVC %s: AuthSession token did not verify; session has no account", s.remote)
+		}
 		body = authSessionResponseBody(sessionID)
 		s.send(d2rResponse(h, body))
 		log.Printf("D2RSVC %s: answered AuthSession token %d (%d-byte body)", s.remote, h.token, len(body))
 		pushSessionState(s, sessionID)
 		return true
+	}
+	if h.service == gameVersionHash && h.method == gameSetGameVersion {
+		s.gameVersion = setGameVersionString(h.body)
 	}
 	if h.service == characterHash {
 		if b, ok := handleCharacterRPC(s, h); ok {
@@ -207,4 +261,29 @@ func handleD2RServices(s *gatewaySession, payload []byte) bool {
 		maybePushGameUpdate(s)
 	}
 	return true
+}
+
+// setGameVersionString reads SetGameVersionRequest {1 string}
+// (docs/d2r-protocol.md: "SetGameVersionRequest {1 string}").
+func setGameVersionString(body []byte) string {
+	for len(body) > 0 {
+		num, typ, n := protowire.ConsumeTag(body)
+		if n < 0 {
+			return ""
+		}
+		body = body[n:]
+		if num == 1 && typ == protowire.BytesType {
+			v, m := protowire.ConsumeBytes(body)
+			if m < 0 {
+				return ""
+			}
+			return string(v)
+		}
+		m := protowire.ConsumeFieldValue(num, typ, body)
+		if m < 0 {
+			return ""
+		}
+		body = body[m:]
+	}
+	return ""
 }

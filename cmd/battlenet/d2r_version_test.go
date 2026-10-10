@@ -112,7 +112,7 @@ func TestRecordLoginVersion(t *testing.T) {
 // The LoginResponse is the same bytes whatever the version verdict: field 4
 // is dropped by the title, so it is never written.
 func TestLoginResponseUnchangedByVerdict(t *testing.T) {
-	want := append(pbBytes(1, []byte("wss://us.actual.battle.net:1119")), pbBytes(2, []byte("openpak:222"))...)
+	want := append(pbBytes(1, []byte("wss://us.actual.battle.net:1119")), pbBytes(2, []byte(d2rSessionToken("222")))...)
 	before := d2rLoginResponse("222")
 	if got := loginResponse("222"); !bytes.Equal(got, want) {
 		t.Fatalf("LoginResponse (current):\n got %x\nwant %x", got, want)
@@ -151,7 +151,7 @@ func drain(s *gatewaySession) [][]byte {
 }
 
 func TestGameUpdateRequiredPush(t *testing.T) {
-	if got := authSessionSubject(append(pbBytes(2, []byte("x")), pbBytes(1, []byte("openpak:333"))...)); got != "333" {
+	if got := authSessionSubject(append(pbBytes(2, []byte("x")), pbBytes(1, []byte(d2rSessionToken("333")))...)); got != "333" {
 		t.Fatalf("AuthSession subject %q", got)
 	}
 

@@ -65,10 +65,14 @@ func serveGame(conn net.Conn) {
 	}
 
 	// The update build never identifies itself on this socket (no 0x68 on the
-	// online path), so the player is whoever made the last GameJoin.
-	// ponytail: one pending join for the whole box; key it by connection once
-	// two players can be joining at the same time.
+	// online path), so the player is the oldest GameJoin still waiting for its
+	// dial (takePendingJoin). The connection holds that account's seat in the
+	// game until it closes.
 	join := takePendingJoin()
+	if join.gameID != 0 {
+		seatGame(join.gameID, join.subject)
+		defer leaveGame(join.gameID, join.subject)
+	}
 	flags := make([]byte, 8)
 	flags[0] = 0x01
 	flags[1] = 0 // Normal
@@ -82,6 +86,10 @@ func serveGame(conn net.Conn) {
 	// unanswered tick, so pongs go out immediately.
 	r := bufio.NewReader(conn)
 	for {
+		// An idle limit, not a lifetime: the client pings every 5 s, and the
+		// game (its lobby entry included) lives as long as this connection.
+		// A fixed 2-minute deadline used to end every game at the 2-minute mark.
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 		id, err := r.ReadByte()
 		if err != nil {
 			log.Printf("D2GS %s closed: %v", remote, err)
@@ -125,10 +133,10 @@ func serveGame(conn net.Conn) {
 				if _, err := conn.Write(append(joinBurst(join.class, join.name, flags), assignNPCs()...)); err != nil {
 					return
 				}
-				log.Printf("D2GS %s: join burst sent for %q (class %d, edition %d, game %d, seed %#x, area %d)", remote, join.name, join.class, join.edition, join.gameID, townSeed, townArea)
+				log.Printf("D2GS %s: join burst sent (class %d, edition %d, game %d, seed %#x, area %d)", remote, join.class, join.edition, join.gameID, townSeed, townArea)
 			}
 		case 0x68:
-			log.Printf("D2GS %s: logon packet (unexpected on this build): class=%d name=%q", remote, pkt[7], trimNUL(pkt[29:45]))
+			log.Printf("D2GS %s: logon packet (unexpected on this build): class=%d", remote, pkt[7])
 		case 0x6B:
 			log.Printf("D2GS %s: client reports loaded", remote)
 		case 0x69:
@@ -250,41 +258,58 @@ type pendingJoin struct {
 	class   byte
 	edition byte // 1 classic, 2 expansion, 3 RotW: the character's, per the roster flags
 	gameID  uint32
+	subject string // the account that made the GameJoin; "" for the fallback
+	at      time.Time
 }
 
+// The update build never identifies itself on the game socket, and every
+// connection arrives from Traefik's address, so a dialling client can only be
+// matched to a GameJoin by order. Until v0.2.0 that was one slot for the whole
+// box: two GameJoins before the first dial handed both clients the second
+// player's character. Now each GameJoin queues, the oldest live one is taken
+// first, and entries older than pendingJoinTTL (a GameJoin whose client never
+// dialled) are dropped.
+//
+// ponytail: FIFO is the best ordering available without an identity on the
+// socket. Two clients dialling in the opposite order from their GameJoins
+// (milliseconds apart) still swap; key it by the logon token if a build ever
+// sends 0x68 online.
+const pendingJoinTTL = 30 * time.Second
+
 var (
-	pendingMu sync.Mutex
-	pending   *pendingJoin
+	pendingMu    sync.Mutex
+	pendingJoins []pendingJoin
 )
 
 // rememberPendingJoin notes who is about to dial the game host, from the
-// roster entry the GameJoin named.
-func rememberPendingJoin(characterID uint64, gameID uint32) {
-	j := &pendingJoin{name: "Player", edition: 1, gameID: gameID}
-	charMu.Lock()
-	for _, c := range charList {
-		if c.ID == characterID {
-			j.name, j.class = c.Name, byte(c.Class)
-			if c.Flags&0x20 != 0 {
-				j.edition = 2
-			}
+// joining account's own roster entry the GameJoin named. An ID that is not on
+// that account's roster gets the fallback name, never another account's
+// character.
+func rememberPendingJoin(subject string, characterID uint64, gameID uint32) {
+	j := pendingJoin{name: "Player", edition: 1, gameID: gameID, subject: subject, at: time.Now()}
+	if c, ok := findCharacter(subject, characterID); ok {
+		j.name, j.class = c.Name, byte(c.Class)
+		if c.Flags&0x20 != 0 {
+			j.edition = 2
 		}
 	}
-	charMu.Unlock()
 	pendingMu.Lock()
-	pending = j
+	pendingJoins = append(pendingJoins, j)
 	pendingMu.Unlock()
 }
 
 func takePendingJoin() pendingJoin {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
-	if pending == nil {
-		return pendingJoin{name: "Player", edition: 1}
+	cutoff := time.Now().Add(-pendingJoinTTL)
+	for len(pendingJoins) > 0 {
+		j := pendingJoins[0]
+		pendingJoins = pendingJoins[1:]
+		if j.at.After(cutoff) {
+			return j
+		}
 	}
-	j := *pending
-	pending = nil
-	return j
+	return pendingJoin{name: "Player", edition: 1}
 }
 
 // A known (seed, spawn) pair for the Act I town: from a published 1.13 capture
@@ -426,13 +451,4 @@ func pong(ping []byte) []byte {
 		copy(p[1:5], ping[1:5])
 	}
 	return p
-}
-
-func trimNUL(b []byte) []byte {
-	for i, c := range b {
-		if c == 0 {
-			return b[:i]
-		}
-	}
-	return b
 }

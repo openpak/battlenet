@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +91,36 @@ type gameRecord struct {
 	Flags       uint64
 	Difficulty  uint64
 	Creator     string // creating session remote, for logs only
+
+	// Owner is the creating account's battlenet subject; Version is the
+	// creator's GameVersion.SetGameVersion string ("" when it never sent one).
+	Owner   string
+	Version string
+	// Seated counts the game-server connections each account holds in this
+	// game (seatGame/leaveGame). A game whose last seat leaves is closed and
+	// removed; one never seated within staleGameAfter is dropped as abandoned.
+	Seated     map[string]int
+	EverSeated bool
+	Players    int // seat count in a listedGames snapshot; unused on live records
+}
+
+// staleGameAfter drops a game nobody ever reached the game server for (the
+// creator backed out between GameCreate and the dial, or never dialled).
+const staleGameAfter = 2 * time.Minute
+
+// liveLocked reports whether a record still stands for a game. Call with
+// gameMu held.
+func (rec *gameRecord) liveLocked(now time.Time) bool {
+	if rec.EverSeated {
+		return len(rec.Seated) > 0
+	}
+	return now.Sub(rec.CreatedAt) < staleGameAfter
+}
+
+// fullLocked reports whether every seat is taken. Max players 0 (never sent
+// by the title) means no limit. Call with gameMu held.
+func (rec *gameRecord) fullLocked() bool {
+	return rec.MaxPlayers > 0 && uint64(len(rec.Seated)) >= rec.MaxPlayers
 }
 
 var (
@@ -254,36 +285,130 @@ func allocateGameIDLocked() uint32 {
 	}
 }
 
-// createGameRecord allocates an ID, records the lobby entry, and returns it.
-// Callers must hold no locks; this takes gameMu.
-func createGameRecord(remote string, req gameCreateRequest) *gameRecord {
+// createGameRecord allocates an ID, records the lobby entry for the creating
+// account, and returns it. A name already held by another account's live game
+// is refused (ok=false) instead of silently replacing that game, which would
+// hand its seats and its GameJoins to whoever created second. The same account
+// re-creating its own name replaces the old record. Callers must hold no locks;
+// this takes gameMu.
+func createGameRecord(remote, owner, version string, req gameCreateRequest) (*gameRecord, bool) {
 	host, port := gameMasterEndpoint(remote)
 	gameMu.Lock()
 	defer gameMu.Unlock()
+	key := normalizeGameKey(req.Key)
+	now := time.Now().UTC()
+	if old, ok := gamesByKey[key]; ok && old.Owner != owner && old.liveLocked(now) {
+		return old, false
+	}
 	rec := &gameRecord{
 		ID:          allocateGameIDLocked(),
-		Key:         normalizeGameKey(req.Key),
+		Key:         key,
 		DisplayName: req.Key,
 		Host:        host,
 		Port:        port,
 		Password:    req.Password,
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt:   now,
 		LevelDiff:   req.LevelDiff,
 		MaxPlayers:  req.MaxPlayers,
 		Flags:       req.Flags,
 		Difficulty:  req.Difficulty,
 		Creator:     remote,
+		Owner:       owner,
+		Version:     version,
+		Seated:      map[string]int{},
 	}
 	gamesByKey[rec.Key] = rec
-	return rec
+	return rec, true
 }
 
-// lookupGame finds a lobby entry by normalized key/name.
+// lookupGame finds a live lobby entry by normalized key/name.
 func lookupGame(name string) (*gameRecord, bool) {
 	gameMu.Lock()
 	defer gameMu.Unlock()
 	rec, ok := gamesByKey[normalizeGameKey(name)]
-	return rec, ok
+	if !ok || !rec.liveLocked(time.Now()) {
+		return nil, false
+	}
+	return rec, true
+}
+
+// gameIsFull reports whether a game has no free seat for this account (an
+// account already seated keeps its seat on a rejoin).
+func gameIsFull(rec *gameRecord, subject string) bool {
+	gameMu.Lock()
+	defer gameMu.Unlock()
+	if _, seated := rec.Seated[subject]; seated {
+		return false
+	}
+	return rec.fullLocked()
+}
+
+// seatGame records that an account's game-server connection for gameID is up.
+func seatGame(gameID uint32, subject string) {
+	gameMu.Lock()
+	defer gameMu.Unlock()
+	for _, rec := range gamesByKey {
+		if rec.ID == gameID {
+			rec.Seated[subject]++
+			rec.EverSeated = true
+			return
+		}
+	}
+}
+
+// leaveGame releases one game-server connection's seat. When the last seat
+// leaves, the game is closed: removed from the lobby, no longer listed or
+// joinable.
+func leaveGame(gameID uint32, subject string) {
+	gameMu.Lock()
+	defer gameMu.Unlock()
+	for key, rec := range gamesByKey {
+		if rec.ID != gameID {
+			continue
+		}
+		if rec.Seated[subject] > 1 {
+			rec.Seated[subject]--
+		} else {
+			delete(rec.Seated, subject)
+		}
+		if len(rec.Seated) == 0 {
+			delete(gamesByKey, key)
+			log.Printf("GAME %d closed: last player left", gameID)
+		}
+		return
+	}
+}
+
+// listedGames is what a Game List shows a viewer: live games with a free
+// seat, no password, and the viewer's game version (when both sides sent
+// one). Password-protected games are joined by name and never listed: the
+// title's quick "private game" fills the password with the game name
+// (docs/d2r-protocol.md, "GameCreateRequest / GameJoinRequest, pinned"), so a
+// listed password game would publish exactly the games meant to be private.
+// Oldest first.
+func listedGames(viewerVersion string) []gameRecord {
+	gameMu.Lock()
+	defer gameMu.Unlock()
+	now := time.Now()
+	var out []gameRecord
+	for key, rec := range gamesByKey {
+		if !rec.liveLocked(now) {
+			delete(gamesByKey, key)
+			continue
+		}
+		if rec.Password != "" || rec.fullLocked() {
+			continue
+		}
+		if viewerVersion != "" && rec.Version != "" && viewerVersion != rec.Version {
+			continue
+		}
+		cp := *rec
+		cp.Seated = nil
+		cp.Players = len(rec.Seated)
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // checkGamePassword validates a Join against the stored password. An empty
@@ -481,10 +606,18 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			}
 		}
 		req := parseGameCreate(h.body)
-		rec := createGameRecord(s.remote, req)
+		if s.subject == "" {
+			log.Printf("D2RSVC %s: GameCreate refused: session has no account", s.remote)
+			return nil, false
+		}
+		rec, ok := createGameRecord(s.remote, s.subject, s.gameVersion, req)
+		if !ok {
+			log.Printf("D2RSVC %s: GameCreate %q refused: another account's game has that name", s.remote, req.Key)
+			return nil, false
+		}
 		body := gameCreateBody(rec.ID)
-		log.Printf("D2RSVC %s: GameCreate %q -> id=%d host=%s port=%d (%d-byte body)",
-			s.remote, req.Key, rec.ID, rec.Host, rec.Port, len(body))
+		log.Printf("D2RSVC %s: GameCreate %q -> id=%d host=%s port=%d max=%d private=%v (%d-byte body)",
+			s.remote, req.Key, rec.ID, rec.Host, rec.Port, rec.MaxPlayers, rec.Password != "", len(body))
 		return body, true
 	case gameJoin:
 		t := loadGameDetailTune()
@@ -494,6 +627,10 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			}
 		}
 		req := parseGameJoin(h.body)
+		if s.subject == "" {
+			log.Printf("D2RSVC %s: GameJoin refused: session has no account", s.remote)
+			return nil, false
+		}
 		rec, ok := lookupGame(req.Key)
 		if !ok {
 			log.Printf("D2RSVC %s: GameJoin %q -> unknown game", s.remote, req.Key)
@@ -503,11 +640,99 @@ func handleGameRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 			log.Printf("D2RSVC %s: GameJoin %q -> password mismatch", s.remote, req.Key)
 			return nil, false
 		}
+		if gameIsFull(rec, s.subject) {
+			log.Printf("D2RSVC %s: GameJoin %q -> full (%d players)", s.remote, req.Key, rec.MaxPlayers)
+			return nil, false
+		}
 		body := gameJoinBody(rec.Host, rec.ID)
-		rememberPendingJoin(req.CharacterID, rec.ID)
+		rememberPendingJoin(s.subject, req.CharacterID, rec.ID)
 		log.Printf("D2RSVC %s: GameJoin %q -> host=%s port=%d id=%d (%d-byte body)",
 			s.remote, req.Key, rec.Host, rec.Port, rec.ID, len(body))
 		return body, true
+	case gameListAll:
+		games := listedGames(s.gameVersion)
+		body := gameListBody(games)
+		textLen, f2, f3 := gameListRequestFields(h.body)
+		log.Printf("D2RSVC %s: GameList request f1=[%d-char string] f2=%d f3=%d -> %d game(s), %d-byte body",
+			s.remote, textLen, f2, f3, len(games), len(body))
+		return body, true
 	}
 	return nil, false
+}
+
+// GameList (GameManagement 0xa5ea9f6d). Layouts recovered 2026-10-10 from the
+// LIVE update build (DB0507F3...), each from both the parser and the
+// serializer/ByteSizeLong, so number and proto type are certain:
+//
+//	GameListRequest  (vtable 0x1ee2648, parse 0x1702460, serialize 0x1702670):
+//	  1 string, 2 uint32, 3 uint32. Meanings NOT traced (likely search text,
+//	  difficulty, game-type/desecrated filter), so nothing filters on them;
+//	  the handler logs them so one live request names them.
+//	GameListResponse (vtable 0x1ee2720, parse 0x1702c68, serialize 0x1702d84):
+//	  1 repeated GameListInfo, nothing else.
+//	GameListInfo     (vtable 0x1ee2570, merge 0x1701cc8, parse 0x1701ee8,
+//	  serialize 0x1702138, ByteSizeLong 0x17022c8):
+//	  1 uint32 current players, 2 uint32 max players (shown "cur/max"),
+//	  3 string game name -- displayed AND the key the client passes on to
+//	  GameJoin/GameDetail, 4 uint32 difficulty (medium confidence),
+//	  5 string description (medium), 6 and 7 uint32 unknown.
+//
+// Only 1-4 are sent: 5 has no source (no GameCreate field is pinned as a
+// description) and 6/7 have no known meaning. The client lists every element
+// it gets and only greys full ones, so fullness, passwords and versions are
+// filtered here (listedGames). Settle 4/5 with one capture: answer a list of
+// {1:1, 2:8, 3:"probe", 4:1, 5:"desc"} and look at the row.
+func gameListBody(games []gameRecord) []byte {
+	var out []byte
+	for _, g := range games {
+		players := uint64(g.Players)
+		if players == 0 {
+			players = 1 // created, the creator still on its way to the game server
+		}
+		info := pbVarint(1, players)
+		info = append(info, pbVarint(2, g.MaxPlayers)...)
+		info = append(info, pbBytes(3, []byte(g.DisplayName))...)
+		info = append(info, pbVarint(4, g.Difficulty)...)
+		out = append(out, pbBytes(1, info)...)
+	}
+	return out
+}
+
+// gameListRequestFields reads GameListRequest's two uint32 fields (2, 3) and
+// the length of its string (1), for the log: their meanings are untraced.
+func gameListRequestFields(body []byte) (textLen int, f2, f3 uint64) {
+	for len(body) > 0 {
+		num, typ, n := protowire.ConsumeTag(body)
+		if n < 0 {
+			return
+		}
+		body = body[n:]
+		switch {
+		case num == 1 && typ == protowire.BytesType:
+			v, m := protowire.ConsumeBytes(body)
+			if m < 0 {
+				return
+			}
+			textLen = len(v)
+			body = body[m:]
+		case (num == 2 || num == 3) && typ == protowire.VarintType:
+			v, m := protowire.ConsumeVarint(body)
+			if m < 0 {
+				return
+			}
+			if num == 2 {
+				f2 = v
+			} else {
+				f3 = v
+			}
+			body = body[m:]
+		default:
+			m := protowire.ConsumeFieldValue(num, typ, body)
+			if m < 0 {
+				return
+			}
+			body = body[m:]
+		}
+	}
+	return
 }

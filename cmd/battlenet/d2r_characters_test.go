@@ -47,6 +47,15 @@ func decodeTestFields(t *testing.T, body []byte) (varints map[uint64]uint64, dat
 	return varints, datas
 }
 
+// resetCharacters empties every roster the way a fresh process starts.
+func resetCharacters() {
+	charMu.Lock()
+	charRosters = map[string][]d2rCharacter{}
+	charUnowned = nil
+	charNext = 1
+	charMu.Unlock()
+}
+
 // The bytes the live client actually sent: 0a07 "Hansolo" 10 04 18 00.
 func TestCreateCharacterRoundTrip(t *testing.T) {
 	req := append(pbBytes(1, []byte("Hansolo")), pbVarint(2, 4)...)
@@ -57,22 +66,14 @@ func TestCreateCharacterRoundTrip(t *testing.T) {
 		t.Fatalf("parse: %+v", got)
 	}
 
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
-
-	if body := readCharacterListBody(); !bytes.Equal(body, pbVarint(1, 0)) {
+	if body := readCharacterListBody(nil); !bytes.Equal(body, pbVarint(1, 0)) {
 		t.Fatalf("empty roster should be field 1 only, got %x", body)
 	}
 
 	got.ID = 7
 	got.Level = 1
-	charMu.Lock()
-	charList = append(charList, got)
-	charMu.Unlock()
 
-	body := readCharacterListBody()
+	body := readCharacterListBody([]d2rCharacter{got})
 	want := append(pbVarint(1, 0), pbBytes(2, characterSummary(got))...)
 	if !bytes.Equal(body, want) {
 		t.Fatalf("roster body\n got %x\nwant %x", body, want)
@@ -248,12 +249,9 @@ func TestSummaryRoundTripsThroughStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BATTLENET_CHARACTER_STORE", dir+"/characters.json")
 
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
+	resetCharacters()
 
-	before, ok := handleCharacterRPC(&gatewaySession{remote: "test"}, d2rHeader{
+	before, ok := handleCharacterRPC(&gatewaySession{remote: "test", subject: "100"}, d2rHeader{
 		service: characterHash,
 		method:  charCreate,
 		body:    append(append(pbBytes(1, []byte("Sorceress")), pbVarint(2, 1)...), pbVarint(3, 2)...),
@@ -262,18 +260,14 @@ func TestSummaryRoundTripsThroughStore(t *testing.T) {
 		t.Fatal("CreateCharacter not handled")
 	}
 	// Wipe memory the way a restart does, then reload from disk.
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
+	resetCharacters()
 	loadCharacters()
 
-	charMu.Lock()
-	defer charMu.Unlock()
-	if len(charList) != 1 {
-		t.Fatalf("roster after restart: %+v", charList)
+	roster := accountCharacters("100")
+	if len(roster) != 1 {
+		t.Fatalf("roster after restart: %+v", roster)
 	}
-	got := charList[0]
+	got := roster[0]
 	if got.Name != "Sorceress" || got.Class != 1 || got.Flags != 2 || got.ID != 1 || got.Level != 1 {
 		t.Fatalf("fields lost across save/load: %+v", got)
 	}
@@ -289,12 +283,9 @@ func TestDeleteCharacter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BATTLENET_CHARACTER_STORE", dir+"/characters.json")
 
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
+	resetCharacters()
 
-	ses := &gatewaySession{remote: "test"}
+	ses := &gatewaySession{remote: "test", subject: "100"}
 	create := append(append(pbBytes(1, []byte("Hansolo")), pbVarint(2, 4)...), pbVarint(3, 0)...)
 	if _, ok := handleCharacterRPC(ses, d2rHeader{service: characterHash, method: charCreate, body: create}); !ok {
 		t.Fatal("CreateCharacter not handled")
@@ -309,10 +300,8 @@ func TestDeleteCharacter(t *testing.T) {
 	if len(body) != 0 {
 		t.Fatalf("delete response should be empty, got %x", body)
 	}
-	charMu.Lock()
-	defer charMu.Unlock()
-	if len(charList) != 0 {
-		t.Fatalf("roster after delete: %+v", charList)
+	if roster := accountCharacters("100"); len(roster) != 0 {
+		t.Fatalf("roster after delete: %+v", roster)
 	}
 }
 
@@ -321,12 +310,9 @@ func TestRosterSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BATTLENET_CHARACTER_STORE", dir+"/characters.json")
 
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
+	resetCharacters()
 
-	if _, ok := handleCharacterRPC(&gatewaySession{remote: "test"}, d2rHeader{
+	if _, ok := handleCharacterRPC(&gatewaySession{remote: "test", subject: "100"}, d2rHeader{
 		service: characterHash,
 		method:  charCreate,
 		body:    append(append(pbBytes(1, []byte("Hansolo")), pbVarint(2, 4)...), pbVarint(3, 0)...),
@@ -335,17 +321,15 @@ func TestRosterSurvivesRestart(t *testing.T) {
 	}
 
 	// Wipe memory the way a restart does, then reload from disk.
-	charMu.Lock()
-	charList = nil
-	charNext = 1
-	charMu.Unlock()
+	resetCharacters()
 	loadCharacters()
 
+	roster := accountCharacters("100")
+	if len(roster) != 1 || roster[0].Name != "Hansolo" || roster[0].Class != 4 || roster[0].Level != 1 {
+		t.Fatalf("roster after restart: %+v", roster)
+	}
 	charMu.Lock()
 	defer charMu.Unlock()
-	if len(charList) != 1 || charList[0].Name != "Hansolo" || charList[0].Class != 4 || charList[0].Level != 1 {
-		t.Fatalf("roster after restart: %+v", charList)
-	}
 	if charNext != 2 {
 		t.Fatalf("next id after restart = %d, want 2", charNext)
 	}

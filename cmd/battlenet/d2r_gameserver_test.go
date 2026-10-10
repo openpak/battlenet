@@ -10,7 +10,7 @@ import (
 // The one check: the server speaks first, accepts the logon, answers flags with
 // bit 0x4, then `00`, then `02` after the first ping and pongs it.
 func TestGameServerHandshake(t *testing.T) {
-	rememberPendingJoin(999, 7) // unknown character: falls back to "Player"
+	rememberPendingJoin("", 999, 7) // unknown character: falls back to "Player"
 	server, client := net.Pipe()
 	go serveGame(server)
 

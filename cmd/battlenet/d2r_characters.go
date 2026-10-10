@@ -39,18 +39,31 @@ type d2rCharacter struct {
 	Level  uint64
 }
 
-// One roster for the whole box, mirrored to disk. It began as process memory
-// with a note to persist it "when a second account exists"; what actually
-// forced the issue was deploys — every service restart wiped the character and
-// the player had to make a new one before they could test anything.
+// One roster per account, mirrored to disk. It began as process memory with a
+// note to persist it "when a second account exists"; what actually forced the
+// persistence was deploys -- every service restart wiped the character and the
+// player had to make a new one before they could test anything.
+//
+// Rosters are keyed by the battlenet subject the D2R-services session proved in
+// AuthSession (d2rTokenSubject: the signed LoginResponse field 2 handed back),
+// never by address. Every console reaches us through Traefik, so two players
+// on one LAN, or two emulator instances on one PC, arrive from the same
+// address; until v0.2.0 there was a single roster for the whole box and a
+// second account saw (and could play or delete) the first one's characters.
+// Character IDs stay unique across the box (one counter) because GameJoin
+// names a character by ID alone.
 //
 // ponytail: one JSON file, rewritten whole on each change. A roster is a
 // handful of entries written once per character creation; reach for a real
 // store when something writes it per-frame.
 var (
-	charMu   sync.Mutex
-	charList []d2rCharacter
-	charNext uint64 = 1
+	charMu      sync.Mutex
+	charRosters        = map[string][]d2rCharacter{} // battlenet subject -> roster
+	charNext    uint64 = 1
+	// charUnowned holds a v0.2.0 store's single roster until an owner is
+	// named (BATTLENET_CHARACTER_LEGACY_OWNER). It is kept on disk and served
+	// to nobody: guessing the owner is how the leak happened in the first place.
+	charUnowned []d2rCharacter
 )
 
 func charStorePath() string {
@@ -58,11 +71,14 @@ func charStorePath() string {
 }
 
 type charStore struct {
-	Next       uint64         `json:"next_id"`
-	Characters []d2rCharacter `json:"characters"`
+	Next uint64 `json:"next_id"`
+	// Characters is the v0.2.0 box-wide roster. Read for migration; written
+	// back only while it still has no owner.
+	Characters []d2rCharacter            `json:"characters,omitempty"`
+	Accounts   map[string][]d2rCharacter `json:"accounts"`
 }
 
-// loadCharacters restores the roster at startup. A missing file is the normal
+// loadCharacters restores the rosters at startup. A missing file is the normal
 // first run, not an error.
 func loadCharacters() {
 	path := charStorePath()
@@ -72,7 +88,7 @@ func loadCharacters() {
 			log.Printf("CHARACTERS: reading %s: %v", path, err)
 			return
 		}
-		// First run. Write the empty roster now rather than at the first
+		// First run. Write the empty store now rather than at the first
 		// character creation: the volume was once mounted unwritable by the
 		// container user and the only sign was one line in the log at create
 		// time, by which point the player had already lost the character.
@@ -89,30 +105,53 @@ func loadCharacters() {
 
 	charMu.Lock()
 	defer charMu.Unlock()
-	charList = st.Characters
+	charRosters = st.Accounts
+	if charRosters == nil {
+		charRosters = map[string][]d2rCharacter{}
+	}
+	charUnowned = st.Characters
 	charNext = st.Next
 	if charNext == 0 {
 		charNext = 1
 	}
-	log.Printf("CHARACTERS: restored %d from %s", len(charList), path)
+	if len(charUnowned) > 0 {
+		if owner := strings.TrimSpace(os.Getenv("BATTLENET_CHARACTER_LEGACY_OWNER")); owner != "" {
+			charRosters[owner] = append(charRosters[owner], charUnowned...)
+			log.Printf("CHARACTERS: assigned %d legacy character(s) to BATTLENET_CHARACTER_LEGACY_OWNER", len(charUnowned))
+			charUnowned = nil
+			saveCharactersLocked()
+		} else {
+			log.Printf("CHARACTERS: %d legacy character(s) from the shared roster have no owner and are served to nobody; set BATTLENET_CHARACTER_LEGACY_OWNER to the owner's battlenet subject to restore them", len(charUnowned))
+		}
+	}
+	log.Printf("CHARACTERS: restored %d account roster(s), %d character(s) from %s", len(charRosters), countCharactersLocked(), path)
 }
 
-// saveCharactersLocked writes the roster. Call with charMu held. Writes to a
+// countCharactersLocked counts every owned character. Call with charMu held.
+func countCharactersLocked() int {
+	n := 0
+	for _, r := range charRosters {
+		n += len(r)
+	}
+	return n
+}
+
+// saveCharactersLocked writes the rosters. Call with charMu held. Writes to a
 // temporary file and renames, so a crash mid-write cannot leave a half-written
-// roster in place of a good one.
+// store in place of a good one.
 func saveCharactersLocked() {
 	path := charStorePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		log.Printf("CHARACTERS: creating %s: %v", filepath.Dir(path), err)
 		return
 	}
-	blob, err := json.Marshal(charStore{Next: charNext, Characters: charList})
+	blob, err := json.Marshal(charStore{Next: charNext, Characters: charUnowned, Accounts: charRosters})
 	if err != nil {
-		log.Printf("CHARACTERS: encoding roster: %v", err)
+		log.Printf("CHARACTERS: encoding rosters: %v", err)
 		return
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o644); err != nil {
+	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
 		log.Printf("CHARACTERS: writing %s: %v", tmp, err)
 		return
 	}
@@ -120,7 +159,64 @@ func saveCharactersLocked() {
 		log.Printf("CHARACTERS: renaming onto %s: %v", path, err)
 		return
 	}
-	log.Printf("CHARACTERS: saved %d to %s", len(charList), path)
+	log.Printf("CHARACTERS: saved %d character(s) in %d account roster(s) to %s", countCharactersLocked(), len(charRosters), path)
+}
+
+// accountCharacters returns a copy of one account's roster.
+func accountCharacters(subject string) []d2rCharacter {
+	charMu.Lock()
+	defer charMu.Unlock()
+	return append([]d2rCharacter(nil), charRosters[subject]...)
+}
+
+// addCharacter stores a new character on its owner's roster, handing out the
+// box-wide ID. It returns the stored character and that roster's size.
+func addCharacter(subject string, c d2rCharacter) (d2rCharacter, int) {
+	charMu.Lock()
+	defer charMu.Unlock()
+	c.ID = charNext
+	c.Level = 1 // a fresh character; the title never tells us a level
+	charNext++
+	charRosters[subject] = append(charRosters[subject], c)
+	saveCharactersLocked()
+	return c, len(charRosters[subject])
+}
+
+// removeCharacter deletes a character from its owner's roster only: an ID on
+// another account's roster is not found.
+func removeCharacter(subject string, id uint64) (removed bool, left int) {
+	charMu.Lock()
+	defer charMu.Unlock()
+	var kept []d2rCharacter
+	for _, c := range charRosters[subject] {
+		if c.ID == id {
+			removed = true
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if !removed {
+		return false, len(charRosters[subject])
+	}
+	if len(kept) == 0 {
+		delete(charRosters, subject)
+	} else {
+		charRosters[subject] = kept
+	}
+	saveCharactersLocked()
+	return true, len(kept)
+}
+
+// findCharacter looks a character up on its owner's roster.
+func findCharacter(subject string, id uint64) (d2rCharacter, bool) {
+	charMu.Lock()
+	defer charMu.Unlock()
+	for _, c := range charRosters[subject] {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return d2rCharacter{}, false
 }
 
 // parseCreateCharacter reads the request the client actually sends.
@@ -314,12 +410,9 @@ func characterJSONExtra() map[string]json.RawMessage {
 // is the real response class or the list arrives some other way. Sending both
 // shapes at once costs two fields and settles it on the wire: if characters
 // appear, 0x16c186c is the response.
-func readCharacterListBody() []byte {
-	charMu.Lock()
-	defer charMu.Unlock()
-
+func readCharacterListBody(roster []d2rCharacter) []byte {
 	out := pbVarint(1, 0)
-	for _, c := range charList {
+	for _, c := range roster {
 		out = append(out, pbBytes(2, characterSummary(c))...)
 	}
 	return out
@@ -357,49 +450,38 @@ func parseDeleteCharacter(body []byte) uint64 {
 	return 0
 }
 
-// handleCharacterRPC answers the Character service. Returns false when the
-// method is not ours, so the caller falls back to the empty-body answer.
+// handleCharacterRPC answers the Character service for the session's account.
+// Returns false when the method is not ours, so the caller falls back to the
+// empty-body answer. A session that never proved an account (no AuthSession,
+// or a token that does not verify) has no roster: it reads an empty list and
+// cannot create or delete. Character names never reach the log.
 func handleCharacterRPC(s *gatewaySession, h d2rHeader) ([]byte, bool) {
 	switch h.method {
 	case charCreate:
 		c := parseCreateCharacter(h.body)
-		charMu.Lock()
-		c.ID = charNext
-		c.Level = 1 // a fresh character; the title never tells us a level
-		charNext++
-		charList = append(charList, c)
-		count := len(charList)
-		saveCharactersLocked()
-		charMu.Unlock()
-		log.Printf("D2RSVC %s: CreateCharacter %q class=%d flags=%d field4=%d id=%d (%d on the roster)",
-			s.remote, c.Name, c.Class, c.Flags, c.Field4, c.ID, count)
+		if s.subject == "" {
+			log.Printf("D2RSVC %s: CreateCharacter refused: session has no account", s.remote)
+			return []byte{}, true
+		}
+		c, count := addCharacter(s.subject, c)
+		log.Printf("D2RSVC %s: CreateCharacter class=%d flags=%d field4=%d id=%d (%d on this account's roster)",
+			s.remote, c.Class, c.Flags, c.Field4, c.ID, count)
 		return createCharacterBody(c), true
 	case charReadList:
-		body := readCharacterListBody()
-		charMu.Lock()
-		count := len(charList)
-		charMu.Unlock()
-		log.Printf("D2RSVC %s: ReadCharacterList -> %d character(s), %d-byte body", s.remote, count, len(body))
+		var roster []d2rCharacter
+		if s.subject != "" {
+			roster = accountCharacters(s.subject)
+		}
+		body := readCharacterListBody(roster)
+		log.Printf("D2RSVC %s: ReadCharacterList -> %d character(s), %d-byte body", s.remote, len(roster), len(body))
 		return body, true
 	case charDelete:
 		id := parseDeleteCharacter(h.body)
-		charMu.Lock()
-		kept := charList[:0]
-		removed := false
-		for _, c := range charList {
-			if c.ID == id {
-				removed = true
-				continue
-			}
-			kept = append(kept, c)
+		removed, count := false, 0
+		if s.subject != "" {
+			removed, count = removeCharacter(s.subject, id)
 		}
-		charList = kept
-		if removed {
-			saveCharactersLocked()
-		}
-		count := len(charList)
-		charMu.Unlock()
-		log.Printf("D2RSVC %s: DeleteCharacter id=%d removed=%v (%d on the roster)",
+		log.Printf("D2RSVC %s: DeleteCharacter id=%d removed=%v (%d on this account's roster)",
 			s.remote, id, removed, count)
 		return []byte{}, true
 	}

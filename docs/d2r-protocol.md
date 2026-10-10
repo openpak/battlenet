@@ -776,3 +776,35 @@ disassembly in `private scratch`.
   2124-3001 dialog) before it ever gets an id_token, so this path only sees clients that got
   past aauth.
 
+
+## GameList, and accounts behind one address (static + server, 2026-10-10)
+
+Recovered from the **update** build (DB0507F3…) with RELA applied, each message from its parser
+and its serializer/ByteSizeLong, so field numbers and proto types are certain:
+
+| Message | vtable / routines | Fields |
+|---|---|---|
+| GameListRequest | 0x1ee2648, parse 0x1702460, serialize 0x1702670 | 1 string, 2 uint32, 3 uint32. Meanings not traced (likely search text, difficulty, game-type/desecrated filter) |
+| GameListResponse | 0x1ee2720, parse 0x1702c68, serialize 0x1702d84 | 1 repeated GameListInfo, nothing else |
+| GameListInfo | 0x1ee2570, merge 0x1701cc8, parse 0x1701ee8, serialize 0x1702138, size 0x17022c8 | 1 uint32 current players, 2 uint32 max players (row shows cur/max), 3 string game name (shown, and the key handed to GameJoin/GameDetail), 4 uint32 difficulty (medium), 5 string description (medium), 6 and 7 uint32 unknown |
+
+This corrects the base-build row above: fields 3 and 5 are strings, 1/2/4/6/7 are uint32. The
+client lists every element and only greys a full one; there is no id field and no gate on any
+value. The server answers 1-4 only, from games other accounts created: live, not full, no
+password (the quick private game uses the name as its password, so password games are never
+listed), and the same SetGameVersion string as the viewer when both sent one. A game closes when
+its last game-server connection drops, and one never reached within 2 minutes is dropped.
+Before v0.3.0 this method was answered with an empty body ("No games found"); the D2RSVC log
+printed every GameManagement and Character call as `unknown` because only the connection and
+GameVersion methods were named, which is why the sweep could not tell it apart from the
+unnamed 0x0b62a8a1/0x4b1c3b85 heartbeat (still unnamed, still answered empty).
+
+Still to settle with one capture: answer a list `{1:1, 2:8, 3:"probe", 4:1, 5:"desc"}` and look
+at the row (pins 4 and 5); the `GameList request f1=… f2=… f3=…` log line names the request
+fields once a player filters the list.
+
+Accounts: the D2R-services socket carries no identity of its own, and every console arrives
+from Traefik's address. Its only link to the bgs logon is LoginResponse field 2, echoed in
+AuthSession field 1. That token is now `openpak:<subject>.<mac>` (HMAC-SHA256, key from
+`BATTLENET_SESSION_KEY` or derived from `ACCOUNT_INTERNAL_KEY`), and characters, game ownership
+and seats are keyed by the subject it proves.
