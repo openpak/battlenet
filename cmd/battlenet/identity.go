@@ -16,8 +16,8 @@ package main
 
 import (
 	"context"
-	crand "crypto/rand"
 	"crypto"
+	crand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -50,9 +50,9 @@ const (
 type identityClient struct {
 	links    accountv1.LinksClient
 	accounts accountv1.IdentityClient
-	conn  *grpc.ClientConn
-	addr  string
-	key   string
+	conn     *grpc.ClientConn
+	addr     string
+	key      string
 }
 
 func newIdentityClient(ctx context.Context, addr, internalKey string) (*identityClient, error) {
