@@ -1,5 +1,13 @@
 # D2R game-server trust patch
 
+> **Current Switch client (2026-10-13): Harbor**, at
+> `~/REPOS/Openpak/emulators/harbor`. Harbor is an independent
+> OpenPak project based on Eden. Citron, Ryujinx (desktop and Android), and
+> the former OpenPak Eden checkouts have been removed. References to those
+> forks below record historical evidence only: do not run their commands,
+> reinstall them, or select them for current work. Use Harbor's README and
+> current handoff for builds and testing; old results do not establish Harbor parity.
+
 Diablo II: Resurrected (Switch) dials the GameJoin host on TCP 443 with its own OpenSSL,
 trusting only a PEM bundle in its read-only segment. Neither nn::ssl nor the console
 certificate store is consulted, so `d2gs.battle.net` is reachable only with the OpenPak CA in

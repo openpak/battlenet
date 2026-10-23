@@ -1,5 +1,13 @@
 # D2R online protocol — what the title expects
 
+> **Current Switch client (2026-10-13): Harbor**, at
+> `~/REPOS/Openpak/emulators/harbor`. Harbor is an independent
+> OpenPak project based on Eden. Citron, Ryujinx (desktop and Android), and
+> the former OpenPak Eden checkouts have been removed. References to those
+> forks below record historical evidence only: do not run their commands,
+> reinstall them, or select them for current work. Use Harbor's README and
+> current handoff for builds and testing; old results do not establish Harbor parity.
+
 Facts recovered from the Diablo II: Resurrected (Switch, 1.0.34.0) binary and
 from our own gateway logs, recorded per the clean-room policy: field numbers,
 wire types, flow. Addresses are text VAs in the decompressed NSO (see
