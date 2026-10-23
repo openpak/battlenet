@@ -63,7 +63,7 @@ private notes.
 
 - Clean room. Public protocol documentation, our own captures, and
   compatibly licensed code are the only inputs; see
-  [`docs/clean-room-policy.md`](https://github.com/openpak/docs/blob/main/clean-room-policy.md).
+  [clean-room policy](https://docs.openpak.org/contributors/clean-room/).
 - AGPL-3.0-only, English only, Go 1.26, no secrets in the repository.
 
 This project is not affiliated with or endorsed by Nintendo or Blizzard
