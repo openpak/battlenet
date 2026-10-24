@@ -826,16 +826,50 @@ func extractFirstJWT(payload []byte) string {
 	if i < 0 {
 		return ""
 	}
-	j := i
-	for j < len(s) {
-		ch := s[j]
-		ok := ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-'
-		if !ok {
-			break
+	// The token is a protobuf string field: its length varint sits right
+	// before it. Scanning for the end instead glues the next field's tag onto
+	// the signature whenever that tag byte is itself base64url ('2', 'B',
+	// 'J', 'R', 'Z', 'b', ...), and the signature check then fails.
+	for k := 1; k <= 3 && k <= i; k++ {
+		l, n := protowire.ConsumeVarint(payload[i-k : i])
+		if n != k || l > uint64(len(s)-i) {
+			continue
 		}
+		if tok := s[i : i+int(l)]; isJWT(tok) {
+			if end := i + len(tok); end < len(s) && isJWTChar(s[end]) {
+				log.Printf("GATEWAY: id_token ends at its field length; a scan would have taken the next byte %#x", s[end])
+			}
+			return tok
+		}
+	}
+	j := i
+	for j < len(s) && isJWTChar(s[j]) {
 		j++
 	}
 	return s[i:j]
+}
+
+func isJWTChar(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-'
+}
+
+// isJWT reports whether tok is three non-empty base64url segments.
+func isJWT(tok string) bool {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for k := 0; k < len(p); k++ {
+			if !isJWTChar(p[k]) || p[k] == '.' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // init seeds the session counter once, before any connection arrives.
