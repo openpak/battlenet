@@ -70,12 +70,12 @@ func TestGameServerHandshake(t *testing.T) {
 	// a long walk packet must be consumed whole, then talking to an NPC opens its dialog
 	walk := make([]byte, 210)
 	walk[0] = 0x01
-	talk := []byte{0x2F, 2, 0, 0, 0}
+	talk := []byte{0x2F, 0x01, 0x01, 0, 0}
 	if _, err := client.Write(append(walk, talk...)); err != nil {
 		t.Fatal(err)
 	}
 	dialog := make([]byte, 40+103)
-	if _, err := io.ReadFull(client, dialog); err != nil || dialog[0] != 0x27 || dialog[2] != 2 || dialog[40] != 0x28 || dialog[41] != 1 || dialog[42] != 2 {
+	if _, err := io.ReadFull(client, dialog); err != nil || dialog[0] != 0x27 || dialog[2] != 0x01 || dialog[3] != 0x01 || dialog[40] != 0x28 || dialog[41] != 1 || dialog[42] != 0x01 {
 		t.Fatalf("dialog = %x %v", dialog[:8], err)
 	}
 	client.Close()

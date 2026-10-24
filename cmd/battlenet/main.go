@@ -303,6 +303,9 @@ func main() {
 
 	go gatewaySink(env("BATTLENET_GATEWAY_ADDR", ":21501"))
 	go gameServer(env("BATTLENET_GAME_ADDR", ":21503"))
+	if certFile := env("BATTLENET_GAME_TLS_CERT", ""); certFile != "" {
+		go gameServerTLS(env("BATTLENET_GAME_TLS_ADDR", ":21504"), certFile, env("BATTLENET_GAME_TLS_KEY", ""))
+	}
 
 	log.Fatal(server.ListenAndServe())
 }

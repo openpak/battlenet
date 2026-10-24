@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/binary"
 	"io"
 	"log"
@@ -26,8 +27,9 @@ import (
 // packets. The client leaves "creating game" only once complete in-game packets
 // arrive every < 15 s -- that part is the game server still to be written.
 //
-// ponytail: handshake plus the minimal join burst for one hard-coded town seed,
-// pongs every ping, logs everything else. No units, no simulation yet.
+// ponytail: handshake, the join burst for one hard-coded town seed, townsfolk
+// to talk to, and the other players in the same game (d2r_world.go). No
+// monsters, items or combat yet.
 
 const (
 	d2gsFlagBase      = 0x4
@@ -41,6 +43,36 @@ func gameServer(addr string) {
 		return
 	}
 	log.Printf("game server on %s (d2gs.battle.net handshake)", addr)
+	acceptGames(listener)
+}
+
+// gameServerTLS terminates the game TLS in-process, for a route that passes
+// the client's handshake through untouched (it sends no SNI, so the proxy
+// cannot pick a certificate for it). The certificate is the no-patch path: a
+// chain to a root the title's own bundle already holds (the update build
+// carries DigiCert Global Root G2), for the name GameJoin field 1 hands out
+// (BATTLENET_GAMEMASTER_HOST). TLS 1.2 at most: the client's TLS 1.3 Finished
+// waits for its next write, a 5 s stall (next-session.md, 2026-10-01).
+func gameServerTLS(addr, certFile, keyFile string) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Printf("game server TLS on %s: %v", addr, err)
+		return
+	}
+	listener, err := tls.Listen("tcp", addr, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		log.Printf("game server TLS on %s: %v", addr, err)
+		return
+	}
+	log.Printf("game server TLS on %s", addr)
+	acceptGames(listener)
+}
+
+func acceptGames(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -71,6 +103,12 @@ func serveGame(conn net.Conn) {
 	// dial (takePendingJoin). The connection holds that account's seat in the
 	// game until it closes.
 	join := takePendingJoin()
+	player, ok := joinWorld(join.gameID, join.class, join.name, conn)
+	if !ok {
+		log.Printf("D2GS %s: game %d is full", remote, join.gameID)
+		return
+	}
+	defer player.leave()
 	if join.gameID != 0 {
 		seatGame(join.gameID, join.subject)
 		defer leaveGame(join.gameID, join.subject)
@@ -127,18 +165,15 @@ func serveGame(conn net.Conn) {
 		switch id {
 		case 0x6D:
 			log.Printf("D2GS %s: ping tick=%d", remote, binary.LittleEndian.Uint32(pkt[1:5]))
-			if _, err := conn.Write(pong(pkt)); err != nil {
-				return
-			}
+			player.send(pong(pkt))
 			// The client pings from game init and checks for the answer inside
 			// its loader too, so the burst goes out only after the first ping
 			// is answered, with pongs interleaved (the one before 04 matters).
 			if !burstSent {
 				burstSent = true
-				if _, err := conn.Write(append(joinBurst(join.class, join.name, flags), assignNPCs()...)); err != nil {
-					return
-				}
-				log.Printf("D2GS %s: join burst sent (class %d, edition %d, game %d, seed %#x, area %d)", remote, join.class, join.edition, join.gameID, townSeed, townArea)
+				player.send(append(joinBurst(player.id, join.class, join.name, flags), assignNPCs()...))
+				player.enterTown()
+				log.Printf("D2GS %s: join burst sent (player %d, class %d, edition %d, game %d, seed %#x, area %d)", remote, player.id, join.class, join.edition, join.gameID, townSeed, townArea)
 			}
 		case 0x68:
 			log.Printf("D2GS %s: logon packet (unexpected on this build): class=%d", remote, pkt[7])
@@ -149,12 +184,18 @@ func serveGame(conn net.Conn) {
 		case 0x2F: // reached an NPC: open its dialog
 			npc := binary.LittleEndian.Uint32(pkt[1:5])
 			log.Printf("D2GS %s: talk to npc %d", remote, npc)
-			if _, err := conn.Write(npcDialog(npc)); err != nil {
-				return
-			}
+			player.send(npcDialog(npc))
 		case 0x30:
 			log.Printf("D2GS %s: closed dialog with npc %d", remote, binary.LittleEndian.Uint32(pkt[1:5]))
-		case 0x42, 0x6F, 0x01, 0x03:
+		case 0x42:
+			if burstSent {
+				player.analogMove(pkt)
+			}
+		case 0x01, 0x03:
+			if burstSent {
+				player.walkTo(pkt)
+			}
+		case 0x6F:
 		default:
 			if traceBodies {
 				log.Printf("D2GS %s: client packet %#x %x", remote, id, pkt[1:])
@@ -207,7 +248,7 @@ func clientPacketLen(id byte, hdr []byte) (total, headerNeeded int, ok bool) {
 
 // Act I townsfolk (monstats hcIdx from the public monster table: akara 148,
 // gheed 147, kashya 150, charsi 154, warriv 155), placed around the spawn
-// inside the revealed rooms. Unit ids follow the player's.
+// inside the revealed rooms. Monster ids sit above the eight player slots.
 // ponytail: positions are offsets from the spawn, not the level's preset
 // markers; good enough to talk to them, wrong for the map.
 type townNPC struct {
@@ -217,11 +258,11 @@ type townNPC struct {
 }
 
 var townNPCs = []townNPC{
-	{2, 148, 30, -20},  // Akara
-	{3, 150, -30, -20}, // Kashya
-	{4, 154, 30, 20},   // Charsi
-	{5, 147, -30, 20},  // Gheed
-	{6, 155, 0, 40},    // Warriv
+	{0x101, 148, 30, -20},  // Akara
+	{0x102, 150, -30, -20}, // Kashya
+	{0x103, 154, 30, 20},   // Charsi
+	{0x104, 147, -30, 20},  // Gheed
+	{0x105, 155, 0, 40},    // Warriv
 }
 
 // assignNPCs: AC per NPC with a one-byte state stream: mode 1 (neutral) in
@@ -333,7 +374,6 @@ const (
 	townArea  = 1    // Rogue Encampment
 	spawnX    = 5653 // subtiles
 	spawnY    = 5523
-	playerID  = 1
 )
 
 var revealCells = [][2]uint16{
@@ -346,7 +386,7 @@ var revealCells = [][2]uint16{
 // local player in town (ingame-packets.md section 2, update layouts): 01 flags
 // (the handshake copy does not reach the game), 03 load act, 07 reveals, 59
 // assign player (71 bytes), 0B set local player, 04 load complete.
-func joinBurst(class byte, name string, flags []byte) []byte {
+func joinBurst(playerID uint32, class byte, name string, flags []byte) []byte {
 	idle := pong(nil)
 	out := append(append([]byte{}, flags[:8]...), 0x00) // 00 = game loading, as the classic burst orders it
 	out = append(out, idle...)
@@ -367,14 +407,7 @@ func joinBurst(class byte, name string, flags []byte) []byte {
 		out = append(out, r...)
 	}
 	out = append(out, idle...)
-	assign := make([]byte, 71)
-	assign[0] = 0x59
-	binary.LittleEndian.PutUint32(assign[1:5], playerID)
-	assign[5] = class
-	copy(assign[6:66], name) // NUL-terminated, at most 60 used
-	binary.LittleEndian.PutUint16(assign[67:69], spawnX)
-	binary.LittleEndian.PutUint16(assign[69:71], spawnY)
-	out = append(out, assign...)
+	out = append(out, assignPlayer(playerID, class, name, spawnX, spawnY)...)
 	out = append(out, idle...)
 	local := make([]byte, 6)
 	local[0] = 0x0B
