@@ -831,3 +831,35 @@ from Traefik's address. Its only link to the bgs logon is LoginResponse field 2,
 AuthSession field 1. That token is now `openpak:<subject>.<mac>` (HMAC-SHA256, key from
 `BATTLENET_SESSION_KEY` or derived from `ACCOUNT_INTERNAL_KEY`), and characters, game ownership
 and seats are keyed by the subject it proves.
+
+## Game server milestones and the shared town (2026-10-24)
+
+The trust for the game leg is the d2r-trust IPS. It is the documented D2R exception to "no game
+patches" (owner, 2026-09-30, confirmed 2026-10-24), for the base build 4DE22400 and the update
+DB0507F3 only. Details, and the unused no-patch alternative, are in `tools/d2r-trust/README.md`.
+The in-process TLS listener (`BATTLENET_GAME_TLS_CERT`, `BATTLENET_GAME_TLS_KEY`,
+`BATTLENET_GAME_TLS_ADDR`, default `:21504`, TLS 1.2 only) exists for that alternative. Without a
+certificate it stays off.
+
+The Diablo II world is server-authoritative, so "complete" means a D2 game server. The stages:
+
+1. Town for one player (seed, rooms, stats, townsfolk, NPC dialogs): done.
+2. **Shared town (this change):** every connection seated in the same GameJoin game joins one
+   world (at most 8). Unit ids are per game (players 1..8, townsfolk 0x101+). The rules:
+   - A newcomer gets its own burst first. Then it gets a `59` AssignPlayer for each player already
+     in town, at that player's last position, and each of them gets a `59` for the newcomer.
+     Remote players get no `0B`.
+   - Stick movement `42 | u16 dir | u16 x | u16 y` goes to the others as
+     `24 | u8 0 | u32 id | u16 dir | u8 0 | u16 x | u16 y`.
+   - Walk/run-to-point `01`/`03` (target @1, current @5) goes to the others as `0F | u8 0 |
+     u32 id | u8 mode (01 walk, 17 run) | u16 x | u16 y | u8 0 | u16 curX | u16 curY`.
+   - Nothing is echoed to the mover: the client never corrects its local player from these, and a
+     command addressed to its own id would drive it.
+   - Leaving sends `0A | u8 0 | u32 id` to the rest.
+   - Positions outside the revealed town cells are dropped, because a unit outside an active room
+     makes the client exit.
+3. Social town: roster (`5B`), party actions (`4F`), shouts (`3D`), townsfolk at preset positions,
+   the whole town revealed.
+4. Persistent characters with items: item bitstream, shops, player trade (`2B`/`2C`), stash, gold.
+5. Outdoor levels: server DRLG, monsters, combat, loot. Then the remaining acts, quests, bosses
+   and ladder.
