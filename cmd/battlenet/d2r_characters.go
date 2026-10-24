@@ -182,6 +182,16 @@ func addCharacter(subject string, c d2rCharacter) (d2rCharacter, int) {
 	return c, len(charRosters[subject])
 }
 
+// runtimeFlags are the character flags as the client holds them at runtime:
+// the create request's field 3, plus expansion (0x20) when field 4 is 2. The
+// Game List request carries these (field 4), so lobby filters compare them.
+func (c d2rCharacter) runtimeFlags() uint64 {
+	if c.Field4 == 2 {
+		return c.Flags | 0x20
+	}
+	return c.Flags
+}
+
 // removeCharacter deletes a character from its owner's roster only: an ID on
 // another account's roster is not found.
 func removeCharacter(subject string, id uint64) (removed bool, left int) {
@@ -316,10 +326,7 @@ func characterData(c d2rCharacter) []byte {
 // surface. It is not the production encoding; select it explicitly with
 // {"_format":"json"} in the tune file.
 func characterJSONData(c d2rCharacter, extra map[string]json.RawMessage) []byte {
-	flags := c.Flags
-	if c.Field4 == 2 {
-		flags |= 0x20
-	}
+	flags := c.runtimeFlags()
 	doc, err := json.Marshal(struct {
 		Version    uint64   `json:"version"`
 		Appearance []uint64 `json:"appearance"`
@@ -364,10 +371,7 @@ func characterLegacyData(c d2rCharacter) []byte {
 	data := make([]byte, 31)
 	data[13] = byte(c.Class + 1)
 	data[25] = byte(c.Level)
-	flags := c.Flags
-	if c.Field4 == 2 {
-		flags |= 0x20
-	}
+	flags := c.runtimeFlags()
 	data[26] = byte(flags & 0x7f)
 	data[27] = byte((flags >> 7) & 0x7f)
 	return data

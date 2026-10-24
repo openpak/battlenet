@@ -424,3 +424,30 @@ func TestGameListAppliesRequestFilters(t *testing.T) {
 		t.Fatalf("preferred site = %q", got)
 	}
 }
+
+// A character created the way the title creates an expansion character
+// (field 3 flags 0, field 4 = 2) hosts a game that an expansion viewer's list
+// shows: the lobby compares the runtime flags, expansion bit included.
+func TestGameListShowsExpansionCreateAsExpansion(t *testing.T) {
+	testGameEnv(t)
+	t.Setenv("BATTLENET_CHARACTER_STORE", t.TempDir()+"/characters.json")
+	resetCharacters()
+	host := signIn(t, "10.89.0.7:5000", d2rSessionToken("1001"))
+	joiner := signIn(t, "10.89.0.7:5001", d2rSessionToken("1002"))
+
+	create := append(append(append(pbBytes(1, []byte("Kord")), pbVarint(2, 4)...), pbVarint(3, 0)...), pbVarint(4, 2)...)
+	v, _ := decodeTestFields(t, d2rCall(t, host, characterHash, charCreate, create))
+	req := append(pbBytes(2, []byte("opak")), pbVarint(10, 4)...)
+	g, _ := decodeTestFields(t, d2rCall(t, host, gameManagementHash, gameCreate, req))
+	d2rCall(t, host, gameManagementHash, gameJoin, append(pbVarint(1, v[1]), pbBytes(2, []byte("opak"))...))
+	seatGame(uint32(g[5]), "1001")
+
+	// The live joiner's request: charflags 0x20, game type 2 (expansion).
+	got := gameListWith(t, joiner, append(pbVarint(4, 0x20), pbVarint(12, 2)...))
+	if _, ok := got["opak"]; !ok {
+		t.Fatalf("expansion viewer's list = %v, want opak", got)
+	}
+	if got := gameListWith(t, joiner, pbVarint(12, 1)); len(got) != 0 {
+		t.Fatalf("classic viewer's list = %v, want none", got)
+	}
+}
