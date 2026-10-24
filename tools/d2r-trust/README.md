@@ -56,10 +56,12 @@ one that matches:
 How it reaches players: the CTR key's delivery, once it is wired. The OpenPak Switch Patcher
 (`platforms/switch/clients/switch-patcher`) carries console-side files in its romfs and copies
 them to `/atmosphere/exefs_patches/` when OpenPak is selected. Harbor builds the CTR key in
-(`src/core/file_sys/openpak_builtin_patches.cpp`). As of 2026-10-24 neither carries the D2R
-patch yet. The only console with it is the owner's, copied to the SD by hand. Adding both files
-to the patcher's list and to Harbor's built-in table is the open delivery step, owned by those
-repos. Until then, players copy the two files by hand.
+(`src/core/file_sys/openpak_builtin_patches.cpp`). Both are on review branches as of
+2026-10-24 and not merged yet: switch-patcher `feat/d2r-trust` installs both files to
+`/atmosphere/exefs_patches/openpak_d2r_trust/` and deletes the old hand-copied `openpak-d2r/`
+files, and Harbor `feat/d2r-builtin` builds both in, keyed by build id, with a SHA-1 check of
+the original bundle. Until they ship, the only console with the patch is the owner's, copied
+to the SD by hand.
 
 Proof it took: the title's TLS handshake to the game host completes, and the battlenet log shows
 `D2GS ...: join burst sent`. Without the patch, the client aborts after our certificate and the
