@@ -4,8 +4,7 @@
 
 OpenPak's Battle.net tier: the web front every redirected Blizzard title hits
 first, and the native gateway that answers its WebSocket RPC logon. One Go
-binary, two listeners, driven by the Diablo II Resurrected logon research in
-private notes.
+binary, two listeners, driven by the Diablo II Resurrected logon research (kept private).
 
 ## Ground rules
 

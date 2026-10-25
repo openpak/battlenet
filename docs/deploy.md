@@ -27,8 +27,7 @@
 
 Every behaviour still being pinned against the client is an env knob:
 candidate shapes iterate by restarting the unit, not rebuilding it. The
-working configuration and its history are in
-private notes.
+working configuration and its history are kept in the maintainers' private notes.
 
 | Knob | Effect |
 | --- | --- |

@@ -10,8 +10,7 @@
 
 Facts recovered from the Diablo II: Resurrected (Switch, 1.0.34.0) binary and
 from our own gateway logs, recorded per the clean-room policy: field numbers,
-wire types, flow. Addresses are text VAs in the decompressed NSO (see
-`private notes` for the toolkit); the working
+wire types, flow. Addresses are text VAs in the decompressed NSO; the working
 scripts live in `/tmp/opencode/d2r/` (`pooldump.py`, `jtscan.py`, `relocs.py` —
 the NSO does carry RELA relocations, so vtables resolve exactly).
 
