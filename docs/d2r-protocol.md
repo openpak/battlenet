@@ -1,6 +1,6 @@
 # D2R online protocol — what the title expects
 
-> **Current Switch client (2026-10-13): Harbor**, at
+> **Current Switch client: Harbor**, at
 > `~/REPOS/Openpak/emulators/harbor`. Harbor is an independent
 > OpenPak project based on Eden. Citron, Ryujinx (desktop and Android), and
 > the former OpenPak Eden checkouts have been removed. References to those
