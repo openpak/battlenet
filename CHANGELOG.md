@@ -3,6 +3,10 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.4.0 — 2026-11-02
+
+- Release from main; replaces the hand-built production image.
+
 ## v0.3.2 — 2026-10-10
 
 - **No personal data in logs.** Battlenet subjects, game names and session addresses appear
