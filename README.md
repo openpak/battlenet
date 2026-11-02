@@ -46,9 +46,9 @@ The full list of variables is in [docs/deploy.md](docs/deploy.md).
 
 - [protocol.md](docs/protocol.md) — hosts, endpoints and the listener behaviour
 - [deploy.md](docs/deploy.md) — ports, env vars, image, build and run
-- [notes.md](docs/notes.md) — role, ground rules, history
 - [d2r-protocol.md](docs/d2r-protocol.md) — what the D2R title expects online: bgs logon flow, D2R-services connection, message layouts
-- [README.md](docs/README.md) — index of this folder
+
+PRDs: openpak/prds (private)
 
 ## Licence
 
