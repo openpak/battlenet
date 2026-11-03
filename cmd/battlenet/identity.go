@@ -403,7 +403,12 @@ func (c *identityClient) resolveOnce(ctx context.Context, idToken string) (strin
 		return "", err
 	}
 
-	return c.battleNetSubject(ctx, link.GetAccountId())
+	subject, err := c.battleNetSubject(ctx, link.GetAccountId())
+	if err == nil {
+		rememberBaas(subject, switchSubject)
+	}
+
+	return subject, err
 }
 
 // newBattleNetSubject mints a Battle.net-shaped subject: a decimal uid in the

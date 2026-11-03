@@ -27,6 +27,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	emit "github.com/openpak/rewards-emit"
 	"io"
 	"log"
 	"net"
@@ -153,6 +154,9 @@ func main() {
 		defer ident.Close()
 		identities = ident
 	}
+
+	rw := emit.FromEnv("battlenet")
+	emit.NewSessions(rw, "game_sessions.diablo-ii-resurrected", 0).Watch(context.Background(), 20*time.Second, rewardsRooms)
 
 	mux := http.NewServeMux()
 

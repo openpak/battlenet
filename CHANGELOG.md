@@ -3,6 +3,10 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.5.0 — 2026-11-03
+
+- **Rewards sessions.** Sends `game_sessions.diablo-ii-resurrected` through rewards-emit: a player counts once per D2R game after 3 unbroken minutes seated in the game server (d2gs) with another seated player. The Battle.net subject is mapped to the Switch BAAS user id proven at check_token. Off unless `REWARDS_EVENTS_URL` and `REWARDS_EVENTS_KEY` are set.
+
 ## v0.4.0 — 2026-11-02
 
 - Release from main; replaces the hand-built production image.
