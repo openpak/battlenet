@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"sync"
+	"time"
 
 	emit "github.com/openpak/rewards-emit"
 )
@@ -17,8 +20,19 @@ import (
 var baasBySubject sync.Map
 
 func rememberBaas(battlenetSubject, baasUserID string) {
-	if battlenetSubject != "" && baasUserID != "" {
-		baasBySubject.Store(battlenetSubject, baasUserID)
+	if battlenetSubject == "" || baasUserID == "" {
+		return
+	}
+	if old, ok := baasBySubject.Load(battlenetSubject); ok && old == baasUserID {
+		return
+	}
+	baasBySubject.Store(battlenetSubject, baasUserID)
+	if rewardsDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rewardsDB.saveMap(ctx, battlenetSubject, baasUserID); err != nil {
+			log.Printf("rewards store: save id map: %v", err)
+		}
 	}
 }
 
