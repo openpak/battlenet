@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"openpak/battlenet/internal/httplog"
 	"openpak/battlenet/redact"
 )
 
@@ -298,7 +299,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           httplog.Middleware(handler),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
