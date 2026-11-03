@@ -23,8 +23,8 @@ github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo
 github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/openpak/account-api v0.1.0 h1:83UeVpCHYG/UWGnu/13wS5AeAgA7uLS1b2vcZAjNudo=
 github.com/openpak/account-api v0.1.0/go.mod h1:FV6mvgh6tftq77GQs2WJlSk4QhG/f+ggL7MU3zeEwtM=
-github.com/openpak/rewards-emit v0.2.1 h1:i+Tyll16JxnsM2GZ7O1XsHuF8eFQFj+jQSorf8CNc3g=
-github.com/openpak/rewards-emit v0.2.1/go.mod h1:g4RmrZFCAo4iuYGf+6a1DBXcV5Ut+fIzYzxFIfBk9kk=
+github.com/openpak/rewards-emit v0.3.0 h1:yNNJ8WSX4HaJ1ZrCZqFJS1JBcOublGJerp8Hq/3W4Ls=
+github.com/openpak/rewards-emit v0.3.0/go.mod h1:l763plPuVedNhxT6TApkWquxUY6P/d+thvRIqIe9kVg=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
