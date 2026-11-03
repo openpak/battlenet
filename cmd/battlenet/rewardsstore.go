@@ -134,12 +134,7 @@ const d2rMetric = "game_sessions.diablo-ii-resurrected"
 func startRewards(ctx context.Context) {
 	rw := emit.FromEnv("battlenet")
 	s := emit.NewSessions(rw, d2rMetric, 0)
-	if url := os.Getenv("BATTLENET_DATABASE_URL"); url != "" {
-		st, err := openRewardsStore(ctx, url)
-		if err != nil {
-			log.Fatalf("rewards store: %v", err)
-		}
-		rewardsDB = st
+	if st := rewardsDB; st != nil {
 		m, err := st.loadMap(ctx)
 		if err != nil {
 			log.Fatalf("rewards store: load map: %v", err)
@@ -162,4 +157,23 @@ func startRewards(ctx context.Context) {
 		log.Printf("rewards store: %d id mappings restored", len(m))
 	}
 	s.Watch(ctx, 20*time.Second, rewardsRooms)
+}
+
+// openStores opens the Postgres store before the rosters load. Without BATTLENET_DATABASE_URL the
+// process refuses to start, unless BATTLENET_ALLOW_FILE_STORE=1 (local runs only): player state
+// must never silently fall back to a file on a volume.
+func openStores(ctx context.Context) {
+	url := os.Getenv("BATTLENET_DATABASE_URL")
+	if url == "" {
+		if os.Getenv("BATTLENET_ALLOW_FILE_STORE") == "1" {
+			log.Printf("WARNING: BATTLENET_DATABASE_URL unset, characters use the JSON file (BATTLENET_ALLOW_FILE_STORE=1)")
+			return
+		}
+		log.Fatalf("BATTLENET_DATABASE_URL is required (set BATTLENET_ALLOW_FILE_STORE=1 for a local run)")
+	}
+	st, err := openRewardsStore(ctx, url)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	rewardsDB = st
 }

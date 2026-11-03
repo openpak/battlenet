@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -332,5 +333,52 @@ func TestRosterSurvivesRestart(t *testing.T) {
 	defer charMu.Unlock()
 	if charNext != 2 {
 		t.Fatalf("next id after restart = %d, want 2", charNext)
+	}
+}
+
+// TestCharactersPostgresRestart: the JSON file is imported once, new characters land in Postgres
+// and a fresh process sees them. Needs TEST_DATABASE_URL.
+func TestCharactersPostgresRestart(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	st, err := openRewardsStore(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_, _ = st.pool.Exec(ctx, charSchema)
+	_, _ = st.pool.Exec(ctx, `TRUNCATE d2r_characters, d2r_char_state`)
+	rewardsDB = st
+	defer func() { rewardsDB = nil }()
+	file := t.TempDir() + "/characters.json"
+	t.Setenv("BATTLENET_CHARACTER_STORE", file)
+	os.WriteFile(file, []byte(`{"next_id":3,"accounts":{"100":[{"Name":"Old","Class":1,"ID":2,"Level":5}]}}`), 0o600)
+
+	resetCharacters()
+	loadCharacters()
+	if r := accountCharacters("100"); len(r) != 1 || r[0].Name != "Old" {
+		t.Fatalf("import: %+v", r)
+	}
+	c, _ := addCharacter("200", d2rCharacter{Name: "New"})
+	if c.ID != 3 {
+		t.Fatalf("id %d", c.ID)
+	}
+	// Second start: the file is not imported again, the DB wins.
+	os.WriteFile(file, []byte(`{"next_id":1,"accounts":{}}`), 0o600)
+	resetCharacters()
+	loadCharacters()
+	if len(accountCharacters("100")) != 1 || len(accountCharacters("200")) != 1 || charNext != 4 {
+		t.Fatalf("after restart: %v %v next=%d", charRosters, charUnowned, charNext)
+	}
+	if ok, _ := removeCharacter("200", 3); !ok {
+		t.Fatal("remove")
+	}
+	resetCharacters()
+	loadCharacters()
+	if len(accountCharacters("200")) != 0 || charNext != 4 {
+		t.Fatalf("after delete: %v next=%d", charRosters, charNext)
 	}
 }

@@ -135,6 +135,7 @@ func main() {
 
 	// The D2R roster outlives the process: a deploy used to cost the player
 	// their character.
+	openStores(context.Background())
 	loadCharacters()
 
 	addr := env("BATTLENET_HTTP_ADDR", ":21500")

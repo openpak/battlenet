@@ -3,6 +3,10 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.7.0 — 2026-11-03
+
+- **D2R characters live in Postgres** (`d2r_characters`, one row per character, plus `d2r_char_state` for the id counter). `characters.json` is imported once (idempotent) and left in place. The service now refuses to start without `BATTLENET_DATABASE_URL` (local runs: `BATTLENET_ALLOW_FILE_STORE=1`). `character.json` is a research tuning knob, not player state, and stays a file.
+
 ## v0.6.0 — 2026-11-03
 
 - **Rewards state is durable.** The Battle.net-subject to BAAS-user-id map and the session clock (who has been seated together since when, who was already counted) live in Postgres (`BATTLENET_DATABASE_URL`, pool of 3) and are reloaded at start. Restart test: `TEST_DATABASE_URL`.

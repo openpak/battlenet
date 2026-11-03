@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -82,6 +84,16 @@ type charStore struct {
 // first run, not an error.
 func loadCharacters() {
 	path := charStorePath()
+	if rewardsDB != nil {
+		charMu.Lock()
+		defer charMu.Unlock()
+		if err := loadCharactersDB(path); err != nil {
+			log.Fatalf("CHARACTERS: Postgres store: %v", err)
+		}
+		charRosterLegacyOwnerLocked()
+		log.Printf("CHARACTERS: restored %d account roster(s), %d character(s) from Postgres", len(charRosters), countCharactersLocked())
+		return
+	}
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -114,17 +126,23 @@ func loadCharacters() {
 	if charNext == 0 {
 		charNext = 1
 	}
-	if len(charUnowned) > 0 {
-		if owner := strings.TrimSpace(os.Getenv("BATTLENET_CHARACTER_LEGACY_OWNER")); owner != "" {
-			charRosters[owner] = append(charRosters[owner], charUnowned...)
-			log.Printf("CHARACTERS: assigned %d legacy character(s) to BATTLENET_CHARACTER_LEGACY_OWNER", len(charUnowned))
-			charUnowned = nil
-			saveCharactersLocked()
-		} else {
-			log.Printf("CHARACTERS: %d legacy character(s) from the shared roster have no owner and are served to nobody; set BATTLENET_CHARACTER_LEGACY_OWNER to the owner's battlenet subject to restore them", len(charUnowned))
-		}
-	}
+	charRosterLegacyOwnerLocked()
 	log.Printf("CHARACTERS: restored %d account roster(s), %d character(s) from %s", len(charRosters), countCharactersLocked(), path)
+}
+
+// charRosterLegacyOwnerLocked hands unowned legacy characters to BATTLENET_CHARACTER_LEGACY_OWNER.
+func charRosterLegacyOwnerLocked() {
+	if len(charUnowned) == 0 {
+		return
+	}
+	if owner := strings.TrimSpace(os.Getenv("BATTLENET_CHARACTER_LEGACY_OWNER")); owner != "" {
+		charRosters[owner] = append(charRosters[owner], charUnowned...)
+		log.Printf("CHARACTERS: assigned %d legacy character(s) to BATTLENET_CHARACTER_LEGACY_OWNER", len(charUnowned))
+		charUnowned = nil
+		saveCharactersLocked()
+	} else {
+		log.Printf("CHARACTERS: %d legacy character(s) from the shared roster have no owner and are served to nobody; set BATTLENET_CHARACTER_LEGACY_OWNER to the owner's battlenet subject to restore them", len(charUnowned))
+	}
 }
 
 // countCharactersLocked counts every owned character. Call with charMu held.
@@ -140,6 +158,14 @@ func countCharactersLocked() int {
 // temporary file and renames, so a crash mid-write cannot leave a half-written
 // store in place of a good one.
 func saveCharactersLocked() {
+	if rewardsDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := saveCharactersDB(ctx); err != nil {
+			log.Printf("CHARACTERS: saving to Postgres: %v", err)
+		}
+		return
+	}
 	path := charStorePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		log.Printf("CHARACTERS: creating %s: %v", filepath.Dir(path), err)
