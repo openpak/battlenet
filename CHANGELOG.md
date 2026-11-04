@@ -3,6 +3,9 @@
 Generated from git history on 2026-09-15. `git log` stays the source
 of truth; this file is the readable summary.
 
+## v0.9.0 — 2026-11-04
+- **Account erasure (openpak/prds#120).** `DELETE /internal/accounts/{account_id}/data` with `Authorization: Bearer $ACCOUNT_ERASE_KEY` on `BATTLENET_ERASE_ADDR` (default `:21502`, container network only; 503 while the key is unset). Resolves the account's switch and battlenet subjects from the core (`ListAccountLinks`) and deletes: its D2R characters (`d2r_characters`, or `characters.json` in file mode), its `baas_map` rows and cache entries, its seats and pending joins in live games. Kept: the `session_state` reward clock (keys are per live room and self-prune on the next tick once the id map entry is gone) and the `d2r_char_state` id counter (no player data). Idempotent; logs one `account erased` line.
+
 ## v0.8.0 — 2026-11-03
 - Per-request logging: one slog line per HTTP request (method, path, status, ms) on stderr via internal/httplog. Query strings, headers and bodies are never logged; /healthz and /metrics are skipped.
 

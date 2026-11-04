@@ -157,6 +157,7 @@ func main() {
 	}
 
 	startRewards(context.Background())
+	serveErase()
 
 	mux := http.NewServeMux()
 

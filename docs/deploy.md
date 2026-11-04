@@ -59,3 +59,16 @@ working configuration and its history are kept in the maintainers' private notes
 | `BATTLENET_CHECK_TOKEN_TEMPLATE` | Full check_token JSON template with `${UID}`, overriding the built-in shape |
 | `BATTLENET_DATABASE_URL` | Postgres (pool of 3) holding the Battle.net-subject to BAAS-user-id map and the rewards session clock, so a restart loses neither. Unset only for local runs (memory only). The service waits up to a minute for Postgres at boot and exits if it is unreachable |
 | `REWARDS_EVENTS_URL`, `REWARDS_EVENTS_KEY` | Rewards events (unset = off). Sends `game_sessions.diablo-ii-resurrected`: a player counts once per D2R game after 3 unbroken minutes seated in the game server with at least one other seated player (`REWARDS_SESSION_MIN` overrides). Identity is the Switch BAAS user id proven by the verified id_token at check_token; accounts without one are not counted |
+
+## Account erasure
+
+`DELETE /internal/accounts/{account_id}/data` on `BATTLENET_ERASE_ADDR` (default `:21502`, reach it as
+`http://openpak-battlenet:21502` on the container network; never publish it). Header
+`Authorization: Bearer <ACCOUNT_ERASE_KEY>`; with the key unset the endpoint answers 503. Needs the same
+`ACCOUNT_GRPC_ADDR` / `ACCOUNT_INTERNAL_KEY` as check_token, to list the account's switch and battlenet links.
+Answer: `{"service":"battlenet","rows":N}`.
+
+Erased: the account's D2R characters, its `baas_map` rows, and any live seat or pending join. Kept: nothing
+that identifies the account; the `session_state` clock and `d2r_char_state` counter carry no player rows
+(clock keys are per live game and drop out on the next tick). Games are not user content, so none are kept.
+The website finaliser step is called `battlenet`.
